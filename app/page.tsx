@@ -12,6 +12,9 @@ import type { FeatureCollection, Geometry } from 'geojson';
 const DATA_URL =
   'https://data.sfgov.org/resource/3i4a-hu95.geojson?$limit=20000';
 const ADDRESS_API = 'https://data.sfgov.org/resource/3mea-di5p.json';
+const LAND_USE_API = 'https://data.sfgov.org/resource/c5ge-t6pj.json';
+const BUILDING_API = 'https://data.sfgov.org/resource/ynuv-fyni.json';
+const FIRE_PERMITS_API = 'https://data.sfgov.org/resource/893e-xam6.json';
 const ZONING_CACHE_TTL = 7 * 24 * 60 * 60 * 1000;
 const ZONING_CACHE_DB = 'sf-zoning-atlas-cache';
 const ZONING_CACHE_STORE = 'datasets';
@@ -94,6 +97,54 @@ type LabAssessment = {
   verify: string[];
 };
 
+type LandUseRecord = {
+  mapblklot?: string;
+  resunits?: string;
+  cie?: string;
+  med?: string;
+  mips?: string;
+  retail?: string;
+  pdr?: string;
+  visitor?: string;
+  total_comm?: string;
+  parking_lo?: boolean;
+  garage?: boolean;
+  open_space?: boolean;
+  geography_type?: string;
+  major_mult?: string;
+  special_jurisdiction?: string;
+  data_as_of?: string;
+};
+
+type BuildingRecord = {
+  sf16_bldgid?: string;
+  mblr?: string;
+  hgt_median_m?: string;
+  peak_1st_m?: string;
+  data_as_of?: string;
+};
+
+type FirePermitRecord = {
+  permit_type_description?: string;
+  permit_status?: string;
+  permit_date_approved?: string;
+  expiration_date?: string;
+};
+
+type SiteEvidence = {
+  status: 'loading' | 'ready' | 'unavailable';
+  landUse: LandUseRecord | null;
+  building: BuildingRecord | null;
+  firePermits: FirePermitRecord[];
+};
+
+type ParcelAssessment = {
+  tone: FitTone;
+  label: string;
+  summary: string;
+  facts: string[];
+};
+
 const FIT_META: Record<FitTone, { label: string; color: string }> = {
   strong: { label: 'Strong location lead', color: '#14856f' },
   review: { label: 'Manual review needed', color: '#d28a27' },
@@ -113,6 +164,128 @@ const LAB_FILL_COLORS = [
 function formatBytes(bytes: number) {
   if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatArea(value: number) {
+  return `${Math.round(value).toLocaleString()} sq ft`;
+}
+
+function numeric(value: string | undefined) {
+  const parsed = Number(value ?? 0);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function describeDate(value: string | undefined) {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
+}
+
+function assessParcel(evidence: SiteEvidence): ParcelAssessment {
+  const landUse = evidence.landUse;
+  const commercialArea = numeric(landUse?.total_comm);
+  const residentialUnits = numeric(landUse?.resunits);
+  const pdrArea = numeric(landUse?.pdr);
+  const medicalArea = numeric(landUse?.med);
+  const officeArea = numeric(landUse?.mips);
+  const facts: string[] = [];
+
+  if (landUse?.mapblklot) facts.push(`Parcel record ${landUse.mapblklot.replaceAll("'", '')}`);
+  if (commercialArea > 0) facts.push(`${formatArea(commercialArea)} recorded commercial use`);
+  if (pdrArea > 0) facts.push(`${formatArea(pdrArea)} recorded PDR use`);
+  if (medicalArea > 0) facts.push(`${formatArea(medicalArea)} recorded medical use`);
+  if (officeArea > 0) facts.push(`${formatArea(officeArea)} recorded office use`);
+  if (residentialUnits > 0) facts.push(`${residentialUnits.toLocaleString()} recorded residential units`);
+
+  const buildingHeight = numeric(evidence.building?.hgt_median_m);
+  if (buildingHeight > 0) facts.push(`Building footprint with ~${Math.round(buildingHeight)} m median height`);
+
+  const approvedFirePermits = evidence.firePermits.filter((permit) =>
+    permit.permit_status?.toLowerCase().includes('approved'),
+  );
+  if (approvedFirePermits.length > 0) {
+    facts.push(`${approvedFirePermits.length} nearby approved lab-relevant Fire permit record${approvedFirePermits.length === 1 ? '' : 's'}`);
+  }
+
+  if (landUse?.open_space) {
+    return {
+      tone: 'low',
+      label: 'Not an existing-space candidate',
+      summary: 'The current City land-use record identifies this as open space, so it should not be treated as an available laboratory building.',
+      facts,
+    };
+  }
+
+  if (landUse?.parking_lo || landUse?.garage) {
+    return {
+      tone: 'low',
+      label: 'No suitable existing space shown',
+      summary: 'The parcel is currently recorded as parking or garage use. It may be a redevelopment site, but it is not a practical existing-space lab lead.',
+      facts,
+    };
+  }
+
+  if (residentialUnits > 0 && commercialArea === 0) {
+    return {
+      tone: 'low',
+      label: 'Residential-only parcel',
+      summary: 'The current parcel record shows residential units and no commercial floor area. This is not a practical existing-building laboratory candidate.',
+      facts,
+    };
+  }
+
+  if (approvedFirePermits.length > 0 && commercialArea > 0) {
+    return {
+      tone: 'strong',
+      label: 'Strong existing-space evidence',
+      summary: 'The parcel has commercial space and nearby approved Fire permit history for lab-relevant materials or gases. Confirm that the permits apply to the offered suite and remain usable.',
+      facts,
+    };
+  }
+
+  if ((pdrArea > 0 || medicalArea > 0) && evidence.building) {
+    return {
+      tone: 'strong',
+      label: 'Promising existing building',
+      summary: 'Current City records show an existing building with PDR or medical space, making this a stronger conversion candidate than zoning alone indicates.',
+      facts,
+    };
+  }
+
+  if (commercialArea > 0 && evidence.building) {
+    return {
+      tone: 'review',
+      label: 'Commercial conversion candidate',
+      summary: 'An existing commercial building is recorded here, but public data does not establish lab-grade HVAC, power, gas handling, egress, or fire protection.',
+      facts,
+    };
+  }
+
+  return {
+    tone: 'review',
+    label: 'Parcel evidence is incomplete',
+    summary: 'The public parcel and building records do not show enough existing-space evidence for a confident result. Confirm the building and proposed suite directly.',
+    facts,
+  };
+}
+
+async function fetchDataSf<T>(
+  endpoint: string,
+  select: string,
+  where: string,
+  signal: AbortSignal,
+  options?: { limit?: number; order?: string },
+): Promise<T[]> {
+  const params = new URLSearchParams({
+    '$select': select,
+    '$where': where,
+    '$limit': String(options?.limit ?? 5),
+  });
+  if (options?.order) params.set('$order', options.order);
+  const response = await fetch(`${endpoint}?${params.toString()}`, { signal });
+  if (!response.ok) throw new Error(`DataSF lookup failed (${response.status})`);
+  return response.json() as Promise<T[]>;
 }
 
 function getFitTone(codeValue: unknown, categoryValue: unknown): FitTone {
@@ -507,6 +680,8 @@ export default function Home() {
   const [addressSearching, setAddressSearching] = useState(false);
   const [selectedAddress, setSelectedAddress] = useState<AddressResult | null>(null);
   const [selectedZone, setSelectedZone] = useState<ZoneDetails | null>(null);
+  const [selectedPoint, setSelectedPoint] = useState<[number, number] | null>(null);
+  const [siteEvidence, setSiteEvidence] = useState<SiteEvidence | null>(null);
   const [hoveredZone, setHoveredZone] = useState<ZoneDetails | null>(null);
   const [panelOpen, setPanelOpen] = useState(false);
 
@@ -515,6 +690,19 @@ export default function Home() {
     () => (detailZone ? assessZone(detailZone) : null),
     [detailZone],
   );
+  const parcelAssessment = useMemo(
+    () => (siteEvidence?.status === 'ready' ? assessParcel(siteEvidence) : null),
+    [siteEvidence],
+  );
+  const firePermitSignals = useMemo(() => {
+    if (siteEvidence?.status !== 'ready') return [];
+    return Array.from(new Set(
+      siteEvidence.firePermits
+        .filter((permit) => permit.permit_status?.toLowerCase().includes('approved'))
+        .map((permit) => permit.permit_type_description)
+        .filter((description): description is string => Boolean(description)),
+    )).slice(0, 4);
+  }, [siteEvidence]);
   const downloadPercent = zoningLoad.totalBytes
     ? Math.min(100, Math.round((zoningLoad.loadedBytes / zoningLoad.totalBytes) * 100))
     : null;
@@ -750,7 +938,12 @@ export default function Home() {
       })[0];
       if (!feature) return;
       setSelectedAddress(null);
+      setAddressQuery('');
+      addressMarkerRef.current?.remove();
+      addressMarkerRef.current = null;
       setSelectedZone(getZoneDetails(feature.properties ?? {}));
+      setSiteEvidence({ status: 'loading', landUse: null, building: null, firePermits: [] });
+      setSelectedPoint([event.lngLat.lng, event.lngLat.lat]);
       setPanelOpen(true);
     });
     map.on('error', (event) => {
@@ -803,6 +996,60 @@ export default function Home() {
     };
   }, [addressQuery, selectedAddress]);
 
+  useEffect(() => {
+    if (!selectedPoint) return;
+
+    const controller = new AbortController();
+    const [longitude, latitude] = selectedPoint;
+    const point = `POINT (${longitude.toFixed(7)} ${latitude.toFixed(7)})`;
+    const relevantFirePermits = [
+      "lower(permit_type_description) like '%compressed gas%'",
+      "lower(permit_type_description) like '%cryogenic%'",
+      "lower(permit_type_description) like '%hazardous material%'",
+      "lower(permit_type_description) like '%flammable%'",
+    ].join(' or ');
+
+    const loadEvidence = async () => {
+      const [landUseResult, buildingResult, fireResult] = await Promise.allSettled([
+        fetchDataSf<LandUseRecord>(
+          LAND_USE_API,
+          'mapblklot,resunits,cie,med,mips,retail,pdr,visitor,total_comm,parking_lo,garage,open_space,geography_type,major_mult,special_jurisdiction,data_as_of',
+          `intersects(the_geom,'${point}')`,
+          controller.signal,
+          { limit: 3 },
+        ),
+        fetchDataSf<BuildingRecord>(
+          BUILDING_API,
+          'sf16_bldgid,mblr,hgt_median_m,peak_1st_m,data_as_of',
+          `intersects(shape,'${point}')`,
+          controller.signal,
+          { limit: 3 },
+        ),
+        fetchDataSf<FirePermitRecord>(
+          FIRE_PERMITS_API,
+          'permit_type_description,permit_status,permit_date_approved,expiration_date',
+          `within_circle(location,${latitude.toFixed(7)},${longitude.toFixed(7)},45) and (${relevantFirePermits})`,
+          controller.signal,
+          { limit: 30, order: 'permit_date_approved DESC' },
+        ),
+      ]);
+
+      if (controller.signal.aborted) return;
+      const allUnavailable = [landUseResult, buildingResult, fireResult]
+        .every((result) => result.status === 'rejected');
+
+      setSiteEvidence({
+        status: allUnavailable ? 'unavailable' : 'ready',
+        landUse: landUseResult.status === 'fulfilled' ? landUseResult.value[0] ?? null : null,
+        building: buildingResult.status === 'fulfilled' ? buildingResult.value[0] ?? null : null,
+        firePermits: fireResult.status === 'fulfilled' ? fireResult.value : [],
+      });
+    };
+
+    void loadEvidence();
+    return () => controller.abort();
+  }, [selectedPoint]);
+
   const selectAddress = (result: AddressResult) => {
     const coordinates: [number, number] = [
       Number(result.longitude),
@@ -815,6 +1062,8 @@ export default function Home() {
     setAddressQuery(result.address);
     setAddressResults([]);
     setSelectedZone(null);
+    setSiteEvidence({ status: 'loading', landUse: null, building: null, firePermits: [] });
+    setSelectedPoint(coordinates);
     setPanelOpen(true);
     addressMarkerRef.current?.remove();
     const markerElement = document.createElement('span');
@@ -833,6 +1082,8 @@ export default function Home() {
     setAddressResults([]);
     setSelectedAddress(null);
     setSelectedZone(null);
+    setSelectedPoint(null);
+    setSiteEvidence(null);
     setPanelOpen(false);
     mapRef.current?.easeTo({ ...INITIAL_VIEW, duration: 900 });
   };
@@ -878,6 +1129,11 @@ export default function Home() {
                 onChange={(event) => {
                   setAddressQuery(event.target.value);
                   setSelectedAddress(null);
+                  setSelectedPoint(null);
+                  setSiteEvidence(null);
+                  setSelectedZone(null);
+                  addressMarkerRef.current?.remove();
+                  addressMarkerRef.current = null;
                 }}
                 placeholder="455 Mission Street"
                 autoComplete="street-address"
@@ -891,6 +1147,11 @@ export default function Home() {
                     setAddressQuery('');
                     setAddressResults([]);
                     setSelectedAddress(null);
+                    setSelectedPoint(null);
+                    setSiteEvidence(null);
+                    setSelectedZone(null);
+                    addressMarkerRef.current?.remove();
+                    addressMarkerRef.current = null;
                   }}
                   aria-label="Clear address search"
                 >
@@ -949,6 +1210,62 @@ export default function Home() {
                 <strong className="confidence-line">{assessment.confidence}</strong>
                 <p>{assessment.summary}</p>
               </div>
+
+              {siteEvidence && (
+                <section className="parcel-evidence" aria-label="Parcel and building evidence">
+                  <div className="parcel-evidence-heading">
+                    <span>Existing-space check</span>
+                    <span>3 City datasets</span>
+                  </div>
+
+                  {siteEvidence.status === 'loading' && (
+                    <div className="parcel-evidence-loading">
+                      <span className="mini-spinner" />
+                      Checking parcel, building, and Fire records…
+                    </div>
+                  )}
+
+                  {siteEvidence.status === 'unavailable' && (
+                    <div className="parcel-evidence-unavailable">
+                      Parcel-level records are temporarily unavailable. The zoning result above still applies.
+                    </div>
+                  )}
+
+                  {siteEvidence.status === 'ready' && parcelAssessment && (
+                    <>
+                      <div className={`parcel-verdict ${parcelAssessment.tone}`}>
+                        <span className="fit-label">
+                          <i style={{ backgroundColor: FIT_META[parcelAssessment.tone].color }} />
+                          {parcelAssessment.label}
+                        </span>
+                        <p>{parcelAssessment.summary}</p>
+                      </div>
+
+                      {parcelAssessment.facts.length > 0 && (
+                        <ul className="parcel-facts">
+                          {parcelAssessment.facts.map((fact) => <li key={fact}>{fact}</li>)}
+                        </ul>
+                      )}
+
+                      {firePermitSignals.length > 0 && (
+                        <div className="fire-signals">
+                          <strong>Approved Fire permit evidence nearby</strong>
+                          <ul>{firePermitSignals.map((signal) => <li key={signal}>{signal}</li>)}</ul>
+                          <p>Permit records are positive evidence, not proof that the offered suite is approved.</p>
+                        </div>
+                      )}
+
+                      <div className="evidence-meta">
+                        {siteEvidence.landUse?.data_as_of && (
+                          <span>Land use updated {describeDate(siteEvidence.landUse.data_as_of)}</span>
+                        )}
+                        <a href="https://data.sfgov.org/Geographic-Locations-and-Boundaries/San-Francisco-Land-Use/c5ge-t6pj" target="_blank" rel="noreferrer">Parcel data ↗</a>
+                        <a href="https://data.sfgov.org/Housing-and-Buildings/Fire-Permits/893e-xam6" target="_blank" rel="noreferrer">Fire permits ↗</a>
+                      </div>
+                    </>
+                  )}
+                </section>
+              )}
 
               <div className="detail-list">
                 <h3>Why this signal</h3>
