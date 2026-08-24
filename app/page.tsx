@@ -8,6 +8,7 @@ import maplibregl, {
   type MapMouseEvent,
   type Marker,
 } from 'maplibre-gl';
+import type { FeatureCollection, Geometry } from 'geojson';
 
 const DATA_URL =
   'https://data.sfgov.org/resource/3i4a-hu95.geojson?$limit=20000';
@@ -79,6 +80,14 @@ type CategoryValue = (typeof CATEGORIES)[number]['value'];
 type LabProfile = (typeof LAB_PROFILES)[number]['value'];
 type LabNeed = 'hazmat' | 'gases' | 'animals' | 'clinical';
 type FitTone = 'lead' | 'review' | 'low';
+type ZoningLoadPhase = 'connecting' | 'downloading' | 'parsing' | 'rendering' | 'ready';
+
+type ZoningLoadState = {
+  phase: ZoningLoadPhase;
+  loadedBytes: number;
+  totalBytes: number | null;
+  featureCount: number | null;
+};
 
 type ZoneDetails = {
   zoning: string;
@@ -106,6 +115,56 @@ const FIT_META: Record<FitTone, { label: string; color: string }> = {
   review: { label: 'Needs zoning review', color: '#d68a2f' },
   low: { label: 'Lower-fit signal', color: '#8b8f8b' },
 };
+
+function formatBytes(bytes: number) {
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+async function downloadZoningData(
+  signal: AbortSignal,
+  onProgress: (loadedBytes: number, totalBytes: number | null) => void,
+  onParsing: () => void,
+): Promise<FeatureCollection<Geometry>> {
+  const response = await fetch(DATA_URL, { signal });
+  if (!response.ok) throw new Error(`Zoning download failed (${response.status})`);
+
+  const contentLength = Number(response.headers.get('content-length'));
+  const totalBytes = Number.isFinite(contentLength) && contentLength > 0
+    ? contentLength
+    : null;
+
+  if (!response.body) {
+    const text = await response.text();
+    onProgress(new TextEncoder().encode(text).byteLength, totalBytes);
+    onParsing();
+    await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+    return JSON.parse(text) as FeatureCollection<Geometry>;
+  }
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let loadedBytes = 0;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    loadedBytes += value.byteLength;
+    onProgress(loadedBytes, totalBytes);
+  }
+
+  const joined = new Uint8Array(loadedBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    joined.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+
+  onParsing();
+  await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+  return JSON.parse(new TextDecoder().decode(joined)) as FeatureCollection<Geometry>;
+}
 
 function getZoneDetails(properties: Record<string, unknown>): ZoneDetails {
   return {
@@ -308,6 +367,12 @@ export default function Home() {
   const hoveredFeatureRef = useRef<string | number | null>(null);
   const [mapReady, setMapReady] = useState(false);
   const [loadError, setLoadError] = useState(false);
+  const [zoningLoad, setZoningLoad] = useState<ZoningLoadState>({
+    phase: 'connecting',
+    loadedBytes: 0,
+    totalBytes: null,
+    featureCount: null,
+  });
   const [mode, setMode] = useState<ExplorerMode>('zoning');
   const [category, setCategory] = useState<CategoryValue>('all');
   const [search, setSearch] = useState('');
@@ -340,6 +405,9 @@ export default function Home() {
     () => (detailZone ? assessZone(detailZone, labProfile) : null),
     [detailZone, labProfile],
   );
+  const downloadPercent = zoningLoad.totalBytes
+    ? Math.min(100, Math.round((zoningLoad.loadedBytes / zoningLoad.totalBytes) * 100))
+    : null;
 
   const clearHover = useCallback(() => {
     const map = mapRef.current;
@@ -377,6 +445,7 @@ export default function Home() {
       ],
       attributionControl: false,
     });
+    const zoningDownload = new AbortController();
 
     mapRef.current = map;
     map.addControl(
@@ -388,12 +457,38 @@ export default function Home() {
       'bottom-right',
     );
 
-    map.on('load', () => {
-      map.addSource('sf-zoning', {
-        type: 'geojson',
-        data: DATA_URL,
-        generateId: true,
-      });
+    map.on('load', async () => {
+      let lastProgressUpdate = 0;
+
+      try {
+        const zoningData = await downloadZoningData(
+          zoningDownload.signal,
+          (loadedBytes, totalBytes) => {
+            const now = performance.now();
+            if (now - lastProgressUpdate < 100 && loadedBytes !== totalBytes) return;
+            lastProgressUpdate = now;
+            setZoningLoad({
+              phase: 'downloading',
+              loadedBytes,
+              totalBytes,
+              featureCount: null,
+            });
+          },
+          () => setZoningLoad((current) => ({ ...current, phase: 'parsing' })),
+        );
+
+        if (zoningDownload.signal.aborted) return;
+        setZoningLoad((current) => ({
+          ...current,
+          phase: 'rendering',
+          featureCount: zoningData.features.length,
+        }));
+
+        map.addSource('sf-zoning', {
+          type: 'geojson',
+          data: zoningData,
+          generateId: true,
+        });
 
       map.addLayer({
         id: 'zoning-fill',
@@ -448,7 +543,11 @@ export default function Home() {
         },
       });
 
-      setMapReady(true);
+      } catch (error) {
+        if (!(error instanceof DOMException && error.name === 'AbortError')) {
+          setLoadError(true);
+        }
+      }
     });
 
     map.on('sourcedata', (event) => {
@@ -456,9 +555,12 @@ export default function Home() {
       const source = map.getSource('sf-zoning') as GeoJSONSource | undefined;
       if (!source) return;
       setZoneCount(map.querySourceFeatures('sf-zoning').length);
+      setMapReady(true);
+      setZoningLoad((current) => ({ ...current, phase: 'ready' }));
     });
 
     const handleMouseMove = (event: MapMouseEvent) => {
+      if (!map.getLayer('zoning-fill')) return;
       const feature = map.queryRenderedFeatures(event.point, {
         layers: ['zoning-fill'],
       })[0];
@@ -486,6 +588,7 @@ export default function Home() {
     map.on('mousemove', handleMouseMove);
     map.on('mouseout', clearHover);
     map.on('click', (event) => {
+      if (!map.getLayer('zoning-fill')) return;
       const feature = map.queryRenderedFeatures(event.point, {
         layers: ['zoning-fill'],
       })[0];
@@ -502,6 +605,7 @@ export default function Home() {
     });
 
     return () => {
+      zoningDownload.abort();
       addressMarkerRef.current?.remove();
       map.remove();
       mapRef.current = null;
@@ -867,8 +971,39 @@ export default function Home() {
 
           {!mapReady && !loadError && (
             <div className="map-loading" role="status">
-              <span className="loading-spinner" />
-              Drawing zoning districts…
+              <div className="loading-heading">
+                <span className="loading-spinner" />
+                <strong>
+                  {zoningLoad.phase === 'connecting' && 'Connecting to SF Open Data…'}
+                  {zoningLoad.phase === 'downloading' && 'Downloading zoning boundaries…'}
+                  {zoningLoad.phase === 'parsing' && 'Preparing downloaded boundaries…'}
+                  {zoningLoad.phase === 'rendering' && 'Drawing zoning districts…'}
+                </strong>
+              </div>
+              <div
+                className={`download-progress ${downloadPercent === null ? 'indeterminate' : ''}`}
+                role="progressbar"
+                aria-label="Zoning boundary download progress"
+                aria-valuemin={0}
+                aria-valuemax={100}
+                {...(downloadPercent !== null ? { 'aria-valuenow': downloadPercent } : {})}
+              >
+                <span style={downloadPercent !== null ? { width: `${downloadPercent}%` } : undefined} />
+              </div>
+              <span className="loading-detail">
+                {zoningLoad.phase === 'connecting' && 'Starting the official city data request'}
+                {zoningLoad.phase === 'downloading' && (
+                  zoningLoad.totalBytes
+                    ? `${downloadPercent}% · ${formatBytes(zoningLoad.loadedBytes)} of ${formatBytes(zoningLoad.totalBytes)}`
+                    : `${formatBytes(zoningLoad.loadedBytes)} received`
+                )}
+                {zoningLoad.phase === 'parsing' && `${formatBytes(zoningLoad.loadedBytes)} downloaded`}
+                {zoningLoad.phase === 'rendering' && (
+                  zoningLoad.featureCount
+                    ? `Placing ${zoningLoad.featureCount.toLocaleString()} district shapes on the map`
+                    : 'Placing district shapes on the map'
+                )}
+              </span>
             </div>
           )}
 
