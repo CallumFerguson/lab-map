@@ -29,9 +29,6 @@ const INITIAL_VIEW = {
 
 const STRONG_CODES = new Set([
   'C-2',
-  'M-1',
-  'M-2',
-  'MB-RA',
   'CMUO',
   'MUG',
   'SALI',
@@ -40,7 +37,8 @@ const STRONG_CODES = new Set([
   'PDR-1-G',
   'PDR-2',
 ]);
-const LIFE_SCIENCE_CODES = new Set(['M-1', 'M-2', 'MB-RA']);
+const LIFE_SCIENCE_CODES = new Set(['M-1', 'M-2']);
+const PLAN_AREA_CODES = new Set(['MB-RA', 'MB-O']);
 const HISTORIC_PATH_CODES = new Set([
   'MUO',
   'MUR',
@@ -49,7 +47,7 @@ const HISTORIC_PATH_CODES = new Set([
   'WMUO',
 ]);
 
-type FitTone = 'life-science' | 'strong' | 'review' | 'low';
+type FitTone = 'life-science' | 'plan-area' | 'strong' | 'review' | 'low';
 type ZoningLoadPhase =
   | 'checking-cache'
   | 'connecting'
@@ -146,11 +144,27 @@ type ParcelAssessment = {
   facts: string[];
 };
 
+type ConfidenceLevel = 'high' | 'medium' | 'low' | 'none';
+
+type ConfidenceRow = {
+  label: string;
+  level: ConfidenceLevel;
+  value: string;
+  detail: string;
+};
+
+type CombinedSiteAssessment = {
+  tone: FitTone;
+  label: string;
+  summary: string;
+};
+
 const FIT_META: Record<FitTone, { label: string; color: string }> = {
-  'life-science': { label: 'Life Science + Laboratory lead', color: '#6557b9' },
-  strong: { label: 'Strong location lead', color: '#14856f' },
-  review: { label: 'Manual review needed', color: '#d28a27' },
-  low: { label: 'Lower-fit starting point', color: '#9a9c96' },
+  'life-science': { label: 'Life Science + Laboratory permitted', color: '#6557b9' },
+  'plan-area': { label: 'Established lab area', color: '#2f75a8' },
+  strong: { label: 'Laboratory permitted', color: '#14856f' },
+  review: { label: 'Conditional or parcel-specific path', color: '#d28a27' },
+  low: { label: 'No identified zoning path', color: '#9a9c96' },
 };
 
 const LAB_FILL_COLORS = [
@@ -158,6 +172,8 @@ const LAB_FILL_COLORS = [
   ['get', 'lab_fit'],
   'life-science',
   FIT_META['life-science'].color,
+  'plan-area',
+  FIT_META['plan-area'].color,
   'strong',
   FIT_META.strong.color,
   'review',
@@ -274,6 +290,182 @@ function assessParcel(evidence: SiteEvidence): ParcelAssessment {
   };
 }
 
+function getZoningConfidence(zone: ZoneDetails): ConfidenceRow {
+  const code = zone.zoning.toUpperCase();
+
+  if (
+    LIFE_SCIENCE_CODES.has(code) ||
+    STRONG_CODES.has(code) ||
+    code.startsWith('C-3-')
+  ) {
+    return {
+      label: 'Zoning',
+      level: 'high',
+      value: 'High',
+      detail: 'The current district table provides a direct use-permission signal.',
+    };
+  }
+
+  if (code === 'PDR-1-B') {
+    return {
+      label: 'Zoning',
+      level: 'high',
+      value: 'High',
+      detail: 'The rule is clear, but Laboratory use is limited to 2,500 gross square feet.',
+    };
+  }
+
+  if (PLAN_AREA_CODES.has(code) || code === 'PPS-MU' || HISTORIC_PATH_CODES.has(code)) {
+    return {
+      label: 'Zoning',
+      level: 'medium',
+      value: 'Medium',
+      detail: 'A plan, block, parcel, or building-specific document controls the final answer.',
+    };
+  }
+
+  if (
+    code.startsWith('PDR-') ||
+    zone.category === 'Industrial' ||
+    zone.category === 'Mixed Use' ||
+    zone.category === 'Mixed'
+  ) {
+    return {
+      label: 'Zoning',
+      level: 'low',
+      value: 'Low',
+      detail: 'The broad district category is not specific enough for a confident determination.',
+    };
+  }
+
+  return {
+    label: 'Zoning',
+    level: 'medium',
+    value: 'Medium',
+    detail: 'No base-zoning path was identified, but parcel exceptions have not been ruled out.',
+  };
+}
+
+function getSiteConfidenceRows(zone: ZoneDetails, evidence: SiteEvidence): ConfidenceRow[] {
+  const rows: ConfidenceRow[] = [getZoningConfidence(zone)];
+
+  if (evidence.status !== 'ready') {
+    rows.push({
+      label: 'Building & land use',
+      level: 'low',
+      value: 'Low',
+      detail: 'Current parcel-level records could not be confirmed.',
+    });
+    rows.push({
+      label: 'Fire readiness',
+      level: 'none',
+      value: 'No evidence',
+      detail: 'No usable Fire permit evidence was available.',
+    });
+    return rows;
+  }
+
+  if (evidence.landUse && evidence.building) {
+    rows.push({
+      label: 'Building & land use',
+      level: 'high',
+      value: 'High',
+      detail: 'A current land-use record and matching building footprint were found.',
+    });
+  } else if (evidence.landUse || evidence.building) {
+    rows.push({
+      label: 'Building & land use',
+      level: 'medium',
+      value: 'Medium',
+      detail: 'Only part of the parcel and building record could be matched.',
+    });
+  } else {
+    rows.push({
+      label: 'Building & land use',
+      level: 'low',
+      value: 'Low',
+      detail: 'No matching parcel-use or building-footprint record was found.',
+    });
+  }
+
+  const approvedFirePermits = evidence.firePermits.filter((permit) =>
+    permit.permit_status?.toLowerCase().includes('approved'),
+  );
+  rows.push(approvedFirePermits.length > 0
+    ? {
+        label: 'Fire readiness',
+        level: 'medium',
+        value: 'Medium',
+        detail: `${approvedFirePermits.length} nearby approved lab-relevant permit record${approvedFirePermits.length === 1 ? '' : 's'} found; suite applicability is unconfirmed.`,
+      }
+    : {
+        label: 'Fire readiness',
+        level: 'none',
+        value: 'No evidence',
+        detail: 'No nearby approved lab-relevant permit was found; this is not negative evidence.',
+      });
+
+  return rows;
+}
+
+function assessCombinedSite(
+  zoneAssessment: LabAssessment,
+  parcelAssessment: ParcelAssessment,
+  evidence: SiteEvidence,
+): CombinedSiteAssessment {
+  if (parcelAssessment.tone === 'low') {
+    return {
+      tone: 'low',
+      label: 'Not an existing-space candidate',
+      summary: `${parcelAssessment.summary} This describes the current site, not whether future redevelopment could ever be approved.`,
+    };
+  }
+
+  if (zoneAssessment.tone === 'low') {
+    return {
+      tone: 'low',
+      label: 'No identified zoning path',
+      summary: 'The current site may have usable building space, but this screen did not identify a base-zoning path for Laboratory use.',
+    };
+  }
+
+  if (zoneAssessment.tone === 'review' || zoneAssessment.tone === 'plan-area') {
+    return {
+      tone: zoneAssessment.tone,
+      label: 'Conditional site',
+      summary: zoneAssessment.tone === 'plan-area'
+        ? 'This is an established lab area, but the parcel’s controlling plan and entitlement must be confirmed before treating it as viable.'
+        : 'A size, block, building, plan, or other site-specific condition must be resolved before treating this location as viable.',
+    };
+  }
+
+  const hasApprovedFireEvidence = evidence.firePermits.some((permit) =>
+    permit.permit_status?.toLowerCase().includes('approved'),
+  );
+
+  if (parcelAssessment.tone === 'strong' && hasApprovedFireEvidence) {
+    return {
+      tone: zoneAssessment.tone,
+      label: 'Strong existing-space lead',
+      summary: 'The regulatory path is strong, an existing commercial building is recorded, and nearby approved lab-relevant Fire permits provide additional positive evidence.',
+    };
+  }
+
+  if (parcelAssessment.tone === 'strong' || evidence.building) {
+    return {
+      tone: zoneAssessment.tone,
+      label: 'Viable conversion lead',
+      summary: 'The regulatory path and public building records are promising, but lab infrastructure and Fire Code readiness still need direct verification.',
+    };
+  }
+
+  return {
+    tone: zoneAssessment.tone,
+    label: 'Zoning-only lead',
+    summary: 'The regulatory path is promising, but public parcel and building data is not strong enough to judge the existing space.',
+  };
+}
+
 async function fetchDataSf<T>(
   endpoint: string,
   select: string,
@@ -297,12 +489,12 @@ function getFitTone(codeValue: unknown, categoryValue: unknown): FitTone {
   const category = String(categoryValue ?? '');
 
   if (LIFE_SCIENCE_CODES.has(code)) return 'life-science';
+  if (PLAN_AREA_CODES.has(code)) return 'plan-area';
   if (STRONG_CODES.has(code) || code.startsWith('C-3-')) return 'strong';
   if (
     code.startsWith('PDR-') ||
     HISTORIC_PATH_CODES.has(code) ||
     code === 'PPS-MU' ||
-    code === 'MB-O' ||
     category === 'Industrial' ||
     category === 'Mixed Use' ||
     category === 'Mixed'
@@ -459,7 +651,7 @@ function assessZone(zone: ZoneDetails): LabAssessment {
   if (code === 'M-1') {
     return {
       tone: 'life-science',
-      label: 'Life Science + Laboratory lead',
+      label: 'Life Science + Laboratory permitted',
       confidence: 'High confidence in both base-zoning signals',
       summary:
         'The current M-district table principally permits Non-Retail Sales and Service, supporting both Laboratory and the stricter Life Science classification. This is one of the clearest zoning signals for the proposed research lab.',
@@ -477,7 +669,7 @@ function assessZone(zone: ZoneDetails): LabAssessment {
   if (code === 'M-2') {
     return {
       tone: 'life-science',
-      label: 'Life Science + Laboratory lead',
+      label: 'Life Science + Laboratory permitted',
       confidence: 'High base-zoning confidence for both; site context matters',
       summary:
         'M-2 has the same Laboratory and Life Science base-use signal as M-1. Much of San Francisco’s M-2 land is Port-controlled or heavy-industrial, so lease controls, access, and building quality deserve extra scrutiny.',
@@ -494,9 +686,9 @@ function assessZone(zone: ZoneDetails): LabAssessment {
 
   if (code === 'MB-RA') {
     return {
-      tone: 'life-science',
-      label: 'Life Science + Laboratory lead',
-      confidence: 'High location confidence for both; parcel approval still required',
+      tone: 'plan-area',
+      label: 'Established lab area — parcel approval required',
+      confidence: 'Medium confidence; redevelopment documents control the parcel',
       summary:
         'Mission Bay is an established Life Science, biotech, and laboratory cluster with substantial lab-ready space. OCII redevelopment documents—not this base-zoning layer alone—control each parcel.',
       evidence: [
@@ -620,8 +812,8 @@ function assessZone(zone: ZoneDetails): LabAssessment {
 
   if (code === 'MB-O') {
     return {
-      tone: 'review',
-      label: 'Mission Bay plan review',
+      tone: 'plan-area',
+      label: 'Established lab area — parcel approval required',
       confidence: 'Medium confidence; redevelopment documents control',
       summary:
         'This Mission Bay office designation sits in a strong laboratory ecosystem, but the zoning label alone does not establish that Laboratory use is allowed in the specific building.',
@@ -648,7 +840,7 @@ function assessZone(zone: ZoneDetails): LabAssessment {
 
   return {
     tone: 'low',
-    label: 'Lower-fit starting point',
+    label: 'No identified zoning path',
     confidence: 'High confidence that no clear base-zoning path is shown',
     summary:
       'This district does not provide a clear Laboratory path in the citywide screen. It may still have a parcel-specific exception, but it is a less efficient place to begin a site search.',
@@ -698,6 +890,25 @@ export default function Home() {
   const parcelAssessment = useMemo(
     () => (siteEvidence?.status === 'ready' ? assessParcel(siteEvidence) : null),
     [siteEvidence],
+  );
+  const combinedAssessment = useMemo(
+    () => {
+      if (!assessment || !siteEvidence) return null;
+      if (parcelAssessment) return assessCombinedSite(assessment, parcelAssessment, siteEvidence);
+      if (siteEvidence.status === 'unavailable') {
+        return {
+          tone: assessment.tone,
+          label: 'Zoning-only lead',
+          summary: 'Parcel-level records are unavailable, so this result reflects only the regulatory pathway.',
+        } satisfies CombinedSiteAssessment;
+      }
+      return null;
+    },
+    [assessment, parcelAssessment, siteEvidence],
+  );
+  const confidenceRows = useMemo(
+    () => (detailZone && siteEvidence ? getSiteConfidenceRows(detailZone, siteEvidence) : []),
+    [detailZone, siteEvidence],
   );
   const firePermitSignals = useMemo(() => {
     if (siteEvidence?.status !== 'ready') return [];
@@ -1196,12 +1407,42 @@ export default function Home() {
               <span>Automated CO₂ incubation</span>
               <span>Biohazard waste</span>
             </div>
-            <p>Land-use screening assumes Laboratory—not Life Science. No animals or manufacturing assumed.</p>
+            <p>Decisions assume Laboratory—not Life Science. Purple areas preserve the stricter Life Science comparison. No animals or manufacturing assumed.</p>
           </section>
 
           {detailZone && assessment ? (
             <article className="assessment-panel" aria-live="polite">
               {selectedAddress && <p className="selected-address">{selectedAddress.address}</p>}
+
+              {combinedAssessment && (
+                <section className={`site-verdict ${combinedAssessment.tone}`}>
+                  <div className="site-verdict-heading">
+                    <span>Overall site verdict</span>
+                    <span>Zoning + existing-space evidence</span>
+                  </div>
+                  <div className="site-verdict-body">
+                    <span className="fit-label">
+                      <i style={{ backgroundColor: FIT_META[combinedAssessment.tone].color }} />
+                      {combinedAssessment.label}
+                    </span>
+                    <p>{combinedAssessment.summary}</p>
+                  </div>
+                  <div className="confidence-grid" aria-label="Evidence confidence">
+                    {confidenceRows.map((row) => (
+                      <div className="confidence-row" key={row.label}>
+                        <span>{row.label}</span>
+                        <strong className={row.level}>{row.value}</strong>
+                        <p>{row.detail}</p>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              <div className="section-heading regulatory-heading">
+                <span>Regulatory path</span>
+                <span>Map color</span>
+              </div>
               <div className="zone-card-topline">
                 <span className="zone-code">{detailZone.zoning}</span>
                 <span className="zone-category">{detailZone.category}</span>
@@ -1291,10 +1532,12 @@ export default function Home() {
           ) : (
             <section className="screening-guide">
               <div className="section-heading"><span>How to read the map</span></div>
-              <div className="guide-row life-science"><i /> <p><strong>Life Science + Laboratory</strong>A strong lead under both the stricter Life Science screen and Laboratory screen.</p></div>
-              <div className="guide-row strong"><i /> <p><strong>Laboratory lead</strong>Laboratory has a clear path, but the stricter Life Science path is not shown.</p></div>
-              <div className="guide-row review"><i /> <p><strong>Manual review</strong>A known condition, special plan, or use-classification issue controls.</p></div>
-              <div className="guide-row low"><i /> <p><strong>Lower fit</strong>No clear Laboratory path appears in this first-pass layer.</p></div>
+              <p className="guide-intro">Map color shows the regulatory pathway—not whether a particular building is lab-ready. Select a location for an overall verdict and confidence breakdown.</p>
+              <div className="guide-row life-science"><i /> <p><strong>Life Science + Laboratory permitted</strong>The base district directly supports both classifications.</p></div>
+              <div className="guide-row plan-area"><i /> <p><strong>Established lab area</strong>Mission Bay has strong lab precedent, but parcel plan documents control.</p></div>
+              <div className="guide-row strong"><i /> <p><strong>Laboratory permitted</strong>The base district supports Laboratory, but not necessarily the stricter Life Science classification.</p></div>
+              <div className="guide-row review"><i /> <p><strong>Conditional or parcel-specific</strong>A size, block, plan, or qualifying-building condition must be checked.</p></div>
+              <div className="guide-row low"><i /> <p><strong>No identified zoning path</strong>The screen found no base path; parcel exceptions have not been ruled out.</p></div>
             </section>
           )}
 
@@ -1311,7 +1554,7 @@ export default function Home() {
 
           <div className="panel-note">
             <span className="note-index">!</span>
-            <p>This is an early site screen, not a permit determination. Purple preserves the stricter Life Science leads; green shows the broader Laboratory-only leads. Neither means every suite is lab-ready.</p>
+            <p>Color describes regulation. Confidence describes how specific the supporting public data is. Nearby Fire permits are positive evidence only; missing permits are not counted against a site.</p>
           </div>
         </aside>
 
@@ -1385,11 +1628,12 @@ export default function Home() {
           </div>
 
           <div className="lab-map-legend" aria-label="Lab screening legend">
-            <p>Location signal</p>
-            <span><i className="life-science" /> Life Science + Lab</span>
-            <span><i className="strong" /> Laboratory lead</span>
-            <span><i className="review" /> Manual review</span>
-            <span><i className="low" /> Lower fit</span>
+            <p>Regulatory path</p>
+            <span><i className="life-science" /> Life Science + Lab permitted</span>
+            <span><i className="plan-area" /> Established lab area</span>
+            <span><i className="strong" /> Laboratory permitted</span>
+            <span><i className="review" /> Conditional / parcel-specific</span>
+            <span><i className="low" /> No identified path</span>
           </div>
 
           {!detailZone && mapReady && (

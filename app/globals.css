@@ -8,6 +8,7 @@
   --line: rgba(30, 33, 31, 0.16);
   --accent: #ee5c3d;
   --life-science: #6557b9;
+  --plan-area: #2f75a8;
   --strong: #14856f;
   --review: #e2a34a;
   --low: #c5c5be;
@@ -331,6 +332,7 @@ a { -webkit-tap-highlight-color: transparent; }
 }
 
 .guide-row.life-science i { background: var(--life-science); }
+.guide-row.plan-area i { background: var(--plan-area); }
 .guide-row.strong i { background: var(--strong); }
 .guide-row.review i { background: var(--review); }
 .guide-row.low i { background: var(--low); }
@@ -347,6 +349,13 @@ a { -webkit-tap-highlight-color: transparent; }
   margin-bottom: 1px;
   color: #363a36;
   font-size: 10px;
+}
+
+.guide-intro {
+  margin: 0 0 14px;
+  color: #666a65;
+  font-size: 9px;
+  line-height: 1.48;
 }
 
 .selected-address {
@@ -394,6 +403,91 @@ a { -webkit-tap-highlight-color: transparent; }
   text-transform: capitalize;
 }
 
+.site-verdict {
+  margin-bottom: 18px;
+  border: 1px solid rgba(30, 33, 31, 0.16);
+  background: rgba(255, 255, 255, 0.58);
+}
+
+.site-verdict-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 11px;
+  border-bottom: 1px solid rgba(30, 33, 31, 0.1);
+  color: #4d514d;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.site-verdict-heading span:last-child {
+  color: #858882;
+  font-size: 7px;
+  text-align: right;
+}
+
+.site-verdict-body {
+  padding: 12px;
+  border-left: 4px solid var(--low);
+}
+
+.site-verdict.life-science .site-verdict-body { border-left-color: var(--life-science); }
+.site-verdict.plan-area .site-verdict-body { border-left-color: var(--plan-area); }
+.site-verdict.strong .site-verdict-body { border-left-color: var(--strong); }
+.site-verdict.review .site-verdict-body { border-left-color: var(--review); }
+
+.site-verdict-body p {
+  margin: 7px 0 0;
+  color: #656965;
+  font-size: 9.5px;
+  line-height: 1.5;
+}
+
+.confidence-grid {
+  border-top: 1px solid rgba(30, 33, 31, 0.1);
+}
+
+.confidence-row {
+  display: grid;
+  grid-template-columns: 88px 62px 1fr;
+  gap: 8px;
+  align-items: start;
+  padding: 9px 11px;
+  border-bottom: 1px solid rgba(30, 33, 31, 0.075);
+}
+
+.confidence-row:last-child { border-bottom: 0; }
+
+.confidence-row > span {
+  color: #555955;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.confidence-row strong {
+  font-size: 8.5px;
+  text-transform: uppercase;
+}
+
+.confidence-row strong.high { color: var(--strong); }
+.confidence-row strong.medium { color: #b36f12; }
+.confidence-row strong.low { color: #8a5549; }
+.confidence-row strong.none { color: #858882; }
+
+.confidence-row p {
+  margin: 0;
+  color: #777a75;
+  font-size: 8px;
+  line-height: 1.4;
+}
+
+.regulatory-heading { margin: 0 0 9px; }
+.regulatory-heading span:last-child { color: #8a8d87; font-size: 7.5px; }
+
 .fit-result {
   border: 1px solid rgba(30, 33, 31, 0.14);
   border-left: 3px solid var(--low);
@@ -402,6 +496,7 @@ a { -webkit-tap-highlight-color: transparent; }
 }
 
 .fit-result.life-science { border-left-color: var(--life-science); }
+.fit-result.plan-area { border-left-color: var(--plan-area); }
 .fit-result.strong { border-left-color: var(--strong); }
 .fit-result.review { border-left-color: var(--review); }
 
@@ -477,6 +572,7 @@ a { -webkit-tap-highlight-color: transparent; }
 }
 
 .parcel-verdict.life-science { border-left-color: var(--life-science); }
+.parcel-verdict.plan-area { border-left-color: var(--plan-area); }
 .parcel-verdict.strong { border-left-color: var(--strong); }
 .parcel-verdict.review { border-left-color: var(--review); }
 
@@ -742,7 +838,7 @@ a { -webkit-tap-highlight-color: transparent; }
   right: 18px;
   display: grid;
   gap: 7px;
-  min-width: 145px;
+  min-width: 188px;
   padding: 12px;
   border: 1px solid rgba(30, 33, 31, 0.13);
   background: rgba(255, 253, 247, 0.94);
@@ -775,6 +871,7 @@ a { -webkit-tap-highlight-color: transparent; }
 }
 
 .lab-map-legend .life-science { background: var(--life-science); }
+.lab-map-legend .plan-area { background: var(--plan-area); }
 .lab-map-legend .strong { background: var(--strong); }
 .lab-map-legend .review { background: var(--review); }
 .lab-map-legend .low { background: var(--low); }
