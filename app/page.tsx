@@ -528,8 +528,6 @@ export default function Home() {
 
   useEffect(() => {
     if (mode !== 'lab' || addressQuery.trim().length < 3) {
-      setAddressResults([]);
-      setAddressSearching(false);
       return;
     }
 
@@ -748,7 +746,7 @@ export default function Home() {
                     </button>
                   )}
                 </div>
-                {addressResults.length > 0 && (
+                {mode === 'lab' && addressQuery.trim().length >= 3 && addressResults.length > 0 && (
                   <div className="address-results" role="listbox" aria-label="Address results">
                     {addressResults.map((result) => (
                       <button
@@ -756,6 +754,7 @@ export default function Home() {
                         type="button"
                         onClick={() => selectAddress(result)}
                         role="option"
+                        aria-selected={selectedAddress?.address === result.address}
                       >
                         <strong>{result.address}</strong>
                         <span>{result.parcel_number ? `Parcel ${result.parcel_number}` : 'San Francisco'}</span>
