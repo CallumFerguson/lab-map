@@ -12,6 +12,10 @@ import type { FeatureCollection, Geometry } from 'geojson';
 const DATA_URL =
   'https://data.sfgov.org/resource/3i4a-hu95.geojson?$limit=20000';
 const ADDRESS_API = 'https://data.sfgov.org/resource/3mea-di5p.json';
+const ZONING_CACHE_TTL = 7 * 24 * 60 * 60 * 1000;
+const ZONING_CACHE_DB = 'sf-zoning-atlas-cache';
+const ZONING_CACHE_STORE = 'datasets';
+const ZONING_CACHE_KEY = 'sf-zoning-boundaries-v1';
 
 const INITIAL_VIEW = {
   center: [-122.424, 37.758] as [number, number],
@@ -42,13 +46,28 @@ const HISTORIC_PATH_CODES = new Set([
 ]);
 
 type FitTone = 'strong' | 'review' | 'low';
-type ZoningLoadPhase = 'connecting' | 'downloading' | 'parsing' | 'rendering' | 'ready';
+type ZoningLoadPhase =
+  | 'checking-cache'
+  | 'connecting'
+  | 'downloading'
+  | 'parsing'
+  | 'saving'
+  | 'rendering'
+  | 'ready';
 
 type ZoningLoadState = {
   phase: ZoningLoadPhase;
+  source: 'cache' | 'network' | null;
   loadedBytes: number;
   totalBytes: number | null;
   featureCount: number | null;
+};
+
+type ZoningCacheRecord = {
+  key: string;
+  cachedAt: number;
+  byteLength: number;
+  json: string;
 };
 
 type ZoneDetails = {
@@ -115,11 +134,68 @@ function getFitTone(codeValue: unknown, categoryValue: unknown): FitTone {
   return 'low';
 }
 
+function openZoningCache(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(ZONING_CACHE_DB, 1);
+    request.onupgradeneeded = () => {
+      const database = request.result;
+      if (!database.objectStoreNames.contains(ZONING_CACHE_STORE)) {
+        database.createObjectStore(ZONING_CACHE_STORE, { keyPath: 'key' });
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function readFreshZoningCache(): Promise<ZoningCacheRecord | null> {
+  if (!('indexedDB' in window)) return null;
+  const database = await openZoningCache();
+
+  try {
+    const record = await new Promise<ZoningCacheRecord | undefined>((resolve, reject) => {
+      const request = database
+        .transaction(ZONING_CACHE_STORE, 'readonly')
+        .objectStore(ZONING_CACHE_STORE)
+        .get(ZONING_CACHE_KEY);
+      request.onsuccess = () => resolve(request.result as ZoningCacheRecord | undefined);
+      request.onerror = () => reject(request.error);
+    });
+
+    if (!record || Date.now() - record.cachedAt >= ZONING_CACHE_TTL) return null;
+    return record;
+  } finally {
+    database.close();
+  }
+}
+
+async function writeZoningCache(json: string, byteLength: number): Promise<void> {
+  if (!('indexedDB' in window)) return;
+  const database = await openZoningCache();
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const transaction = database.transaction(ZONING_CACHE_STORE, 'readwrite');
+      transaction.objectStore(ZONING_CACHE_STORE).put({
+        key: ZONING_CACHE_KEY,
+        cachedAt: Date.now(),
+        byteLength,
+        json,
+      } satisfies ZoningCacheRecord);
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error);
+      transaction.onabort = () => reject(transaction.error);
+    });
+  } finally {
+    database.close();
+  }
+}
+
 async function downloadZoningData(
   signal: AbortSignal,
   onProgress: (loadedBytes: number, totalBytes: number | null) => void,
   onParsing: () => void,
-): Promise<FeatureCollection<Geometry>> {
+): Promise<{ data: FeatureCollection<Geometry>; json: string; byteLength: number }> {
   const response = await fetch(DATA_URL, { signal });
   if (!response.ok) throw new Error(`Zoning download failed (${response.status})`);
 
@@ -133,7 +209,11 @@ async function downloadZoningData(
     onProgress(new TextEncoder().encode(text).byteLength, totalBytes);
     onParsing();
     await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
-    return JSON.parse(text) as FeatureCollection<Geometry>;
+    return {
+      data: JSON.parse(text) as FeatureCollection<Geometry>,
+      json: text,
+      byteLength: new TextEncoder().encode(text).byteLength,
+    };
   }
 
   const reader = response.body.getReader();
@@ -157,7 +237,12 @@ async function downloadZoningData(
 
   onParsing();
   await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
-  return JSON.parse(new TextDecoder().decode(joined)) as FeatureCollection<Geometry>;
+  const json = new TextDecoder().decode(joined);
+  return {
+    data: JSON.parse(json) as FeatureCollection<Geometry>,
+    json,
+    byteLength: loadedBytes,
+  };
 }
 
 function getZoneDetails(properties: Record<string, unknown>): ZoneDetails {
@@ -411,7 +496,8 @@ export default function Home() {
   const [mapReady, setMapReady] = useState(false);
   const [loadError, setLoadError] = useState(false);
   const [zoningLoad, setZoningLoad] = useState<ZoningLoadState>({
-    phase: 'connecting',
+    phase: 'checking-cache',
+    source: null,
     loadedBytes: 0,
     totalBytes: null,
     featureCount: null,
@@ -479,21 +565,64 @@ export default function Home() {
       let lastProgressUpdate = 0;
 
       try {
-        const zoningData = await downloadZoningData(
-          zoningDownload.signal,
-          (loadedBytes, totalBytes) => {
-            const now = performance.now();
-            if (now - lastProgressUpdate < 100 && loadedBytes !== totalBytes) return;
-            lastProgressUpdate = now;
-            setZoningLoad({
-              phase: 'downloading',
-              loadedBytes,
-              totalBytes,
-              featureCount: null,
-            });
-          },
-          () => setZoningLoad((current) => ({ ...current, phase: 'parsing' })),
-        );
+        let zoningData: FeatureCollection<Geometry>;
+        let cachedRecord: ZoningCacheRecord | null = null;
+
+        try {
+          cachedRecord = await readFreshZoningCache();
+        } catch {
+          cachedRecord = null;
+        }
+
+        if (cachedRecord) {
+          setZoningLoad({
+            phase: 'parsing',
+            source: 'cache',
+            loadedBytes: cachedRecord.byteLength,
+            totalBytes: cachedRecord.byteLength,
+            featureCount: null,
+          });
+          await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+
+          try {
+            zoningData = JSON.parse(cachedRecord.json) as FeatureCollection<Geometry>;
+          } catch {
+            cachedRecord = null;
+          }
+        }
+
+        if (!cachedRecord) {
+          setZoningLoad({
+            phase: 'connecting',
+            source: 'network',
+            loadedBytes: 0,
+            totalBytes: null,
+            featureCount: null,
+          });
+          const downloaded = await downloadZoningData(
+            zoningDownload.signal,
+            (loadedBytes, totalBytes) => {
+              const now = performance.now();
+              if (now - lastProgressUpdate < 100 && loadedBytes !== totalBytes) return;
+              lastProgressUpdate = now;
+              setZoningLoad({
+                phase: 'downloading',
+                source: 'network',
+                loadedBytes,
+                totalBytes,
+                featureCount: null,
+              });
+            },
+            () => setZoningLoad((current) => ({ ...current, phase: 'parsing' })),
+          );
+          zoningData = downloaded.data;
+          setZoningLoad((current) => ({ ...current, phase: 'saving' }));
+          try {
+            await writeZoningCache(downloaded.json, downloaded.byteLength);
+          } catch {
+            // Storage can be unavailable or full; the downloaded map still works.
+          }
+        }
 
         if (zoningDownload.signal.aborted) return;
         const screeningData: FeatureCollection<Geometry> = {
@@ -871,9 +1000,15 @@ export default function Home() {
               <div className="loading-heading">
                 <span className="loading-spinner" />
                 <strong>
+                  {zoningLoad.phase === 'checking-cache' && 'Checking saved zoning data…'}
                   {zoningLoad.phase === 'connecting' && 'Connecting to SF Open Data…'}
                   {zoningLoad.phase === 'downloading' && 'Downloading zoning boundaries…'}
-                  {zoningLoad.phase === 'parsing' && 'Preparing downloaded boundaries…'}
+                  {zoningLoad.phase === 'parsing' && (
+                    zoningLoad.source === 'cache'
+                      ? 'Opening saved zoning boundaries…'
+                      : 'Preparing downloaded boundaries…'
+                  )}
+                  {zoningLoad.phase === 'saving' && 'Saving zoning boundaries for next time…'}
                   {zoningLoad.phase === 'rendering' && 'Scoring districts for your lab…'}
                 </strong>
               </div>
@@ -888,13 +1023,19 @@ export default function Home() {
                 <span style={downloadPercent !== null ? { width: `${downloadPercent}%` } : undefined} />
               </div>
               <span className="loading-detail">
+                {zoningLoad.phase === 'checking-cache' && 'Saved data remains fresh for 7 days'}
                 {zoningLoad.phase === 'connecting' && 'Starting the official city data request'}
                 {zoningLoad.phase === 'downloading' && (
                   zoningLoad.totalBytes
                     ? `${downloadPercent}% · ${formatBytes(zoningLoad.loadedBytes)} of ${formatBytes(zoningLoad.totalBytes)}`
                     : `${formatBytes(zoningLoad.loadedBytes)} received`
                 )}
-                {zoningLoad.phase === 'parsing' && `${formatBytes(zoningLoad.loadedBytes)} downloaded`}
+                {zoningLoad.phase === 'parsing' && (
+                  zoningLoad.source === 'cache'
+                    ? `${formatBytes(zoningLoad.loadedBytes)} loaded from this device`
+                    : `${formatBytes(zoningLoad.loadedBytes)} downloaded`
+                )}
+                {zoningLoad.phase === 'saving' && 'This copy will be reused for up to 7 days'}
                 {zoningLoad.phase === 'rendering' && (
                   zoningLoad.featureCount
                     ? `Assessing ${zoningLoad.featureCount.toLocaleString()} district shapes`
