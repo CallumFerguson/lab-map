@@ -7,6 +7,7 @@
   --paper: #f6f1e7;
   --line: rgba(30, 33, 31, 0.16);
   --accent: #ee5c3d;
+  --life-science: #6557b9;
   --strong: #14856f;
   --review: #e2a34a;
   --low: #c5c5be;
@@ -329,6 +330,7 @@ a { -webkit-tap-highlight-color: transparent; }
   border-radius: 50%;
 }
 
+.guide-row.life-science i { background: var(--life-science); }
 .guide-row.strong i { background: var(--strong); }
 .guide-row.review i { background: var(--review); }
 .guide-row.low i { background: var(--low); }
@@ -399,6 +401,7 @@ a { -webkit-tap-highlight-color: transparent; }
   padding: 12px;
 }
 
+.fit-result.life-science { border-left-color: var(--life-science); }
 .fit-result.strong { border-left-color: var(--strong); }
 .fit-result.review { border-left-color: var(--review); }
 
@@ -473,6 +476,7 @@ a { -webkit-tap-highlight-color: transparent; }
   border-left: 3px solid var(--low);
 }
 
+.parcel-verdict.life-science { border-left-color: var(--life-science); }
 .parcel-verdict.strong { border-left-color: var(--strong); }
 .parcel-verdict.review { border-left-color: var(--review); }
 
@@ -770,6 +774,7 @@ a { -webkit-tap-highlight-color: transparent; }
   border-radius: 50%;
 }
 
+.lab-map-legend .life-science { background: var(--life-science); }
 .lab-map-legend .strong { background: var(--strong); }
 .lab-map-legend .review { background: var(--review); }
 .lab-map-legend .low { background: var(--low); }

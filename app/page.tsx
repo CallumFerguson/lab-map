@@ -40,6 +40,7 @@ const STRONG_CODES = new Set([
   'PDR-1-G',
   'PDR-2',
 ]);
+const LIFE_SCIENCE_CODES = new Set(['M-1', 'M-2', 'MB-RA']);
 const HISTORIC_PATH_CODES = new Set([
   'MUO',
   'MUR',
@@ -48,7 +49,7 @@ const HISTORIC_PATH_CODES = new Set([
   'WMUO',
 ]);
 
-type FitTone = 'strong' | 'review' | 'low';
+type FitTone = 'life-science' | 'strong' | 'review' | 'low';
 type ZoningLoadPhase =
   | 'checking-cache'
   | 'connecting'
@@ -146,6 +147,7 @@ type ParcelAssessment = {
 };
 
 const FIT_META: Record<FitTone, { label: string; color: string }> = {
+  'life-science': { label: 'Life Science + Laboratory lead', color: '#6557b9' },
   strong: { label: 'Strong location lead', color: '#14856f' },
   review: { label: 'Manual review needed', color: '#d28a27' },
   low: { label: 'Lower-fit starting point', color: '#9a9c96' },
@@ -154,6 +156,8 @@ const FIT_META: Record<FitTone, { label: string; color: string }> = {
 const LAB_FILL_COLORS = [
   'match',
   ['get', 'lab_fit'],
+  'life-science',
+  FIT_META['life-science'].color,
   'strong',
   FIT_META.strong.color,
   'review',
@@ -292,6 +296,7 @@ function getFitTone(codeValue: unknown, categoryValue: unknown): FitTone {
   const code = String(codeValue ?? '').toUpperCase();
   const category = String(categoryValue ?? '');
 
+  if (LIFE_SCIENCE_CODES.has(code)) return 'life-science';
   if (STRONG_CODES.has(code) || code.startsWith('C-3-')) return 'strong';
   if (
     code.startsWith('PDR-') ||
@@ -453,14 +458,14 @@ function assessZone(zone: ZoneDetails): LabAssessment {
 
   if (code === 'M-1') {
     return {
-      tone: 'strong',
-      label: 'Laboratory use permitted',
-      confidence: 'High confidence in the base-zoning signal',
+      tone: 'life-science',
+      label: 'Life Science + Laboratory lead',
+      confidence: 'High confidence in both base-zoning signals',
       summary:
-        'The current M-district table principally permits Non-Retail Sales and Service, the use class that includes Laboratory. This is a clear base-zoning signal for the proposed research lab.',
+        'The current M-district table principally permits Non-Retail Sales and Service, supporting both Laboratory and the stricter Life Science classification. This is one of the clearest zoning signals for the proposed research lab.',
       evidence: [
         'Laboratory covers facilities used for scientific research, including BSL-1, BSL-2, and BSL-3 biological laboratories.',
-        'M-1 permits the broader Non-Retail Sales and Service use class.',
+        'M-1 permits the broader use class that includes Laboratory and Life Science.',
       ],
       verify: [
         'Parcel overlays, prior conditions, and any change of use',
@@ -471,14 +476,14 @@ function assessZone(zone: ZoneDetails): LabAssessment {
 
   if (code === 'M-2') {
     return {
-      tone: 'strong',
-      label: 'Strong zoning lead',
-      confidence: 'High base-zoning confidence; site context matters',
+      tone: 'life-science',
+      label: 'Life Science + Laboratory lead',
+      confidence: 'High base-zoning confidence for both; site context matters',
       summary:
-        'M-2 has the same strong base-use signal as M-1. Much of San Francisco’s M-2 land is Port-controlled or heavy-industrial, so lease controls, access, and building quality deserve extra scrutiny.',
+        'M-2 has the same Laboratory and Life Science base-use signal as M-1. Much of San Francisco’s M-2 land is Port-controlled or heavy-industrial, so lease controls, access, and building quality deserve extra scrutiny.',
       evidence: [
         'The M-district table permits Non-Retail Sales and Service in M-2.',
-        'Laboratory sits within that use class under the current Planning Code.',
+        'Laboratory and Life Science sit within that use class under the current Planning Code.',
       ],
       verify: [
         'Port or other landowner controls and parcel-specific entitlements',
@@ -489,11 +494,11 @@ function assessZone(zone: ZoneDetails): LabAssessment {
 
   if (code === 'MB-RA') {
     return {
-      tone: 'strong',
-      label: 'Established laboratory area',
-      confidence: 'High location confidence; parcel approval still required',
+      tone: 'life-science',
+      label: 'Life Science + Laboratory lead',
+      confidence: 'High location confidence for both; parcel approval still required',
       summary:
-        'Mission Bay is an established biotech and laboratory cluster with substantial lab-ready space. OCII redevelopment documents—not this base-zoning layer alone—control each parcel.',
+        'Mission Bay is an established Life Science, biotech, and laboratory cluster with substantial lab-ready space. OCII redevelopment documents—not this base-zoning layer alone—control each parcel.',
       evidence: [
         'Mission Bay was planned and built with substantial laboratory and biotech space.',
         'Existing lab buildings can reduce the hardest HVAC, power, gas, and waste-route problems.',
@@ -1286,7 +1291,8 @@ export default function Home() {
           ) : (
             <section className="screening-guide">
               <div className="section-heading"><span>How to read the map</span></div>
-              <div className="guide-row strong"><i /> <p><strong>Strong lead</strong>Laboratory is principally permitted or the plan area has strong lab support.</p></div>
+              <div className="guide-row life-science"><i /> <p><strong>Life Science + Laboratory</strong>A strong lead under both the stricter Life Science screen and Laboratory screen.</p></div>
+              <div className="guide-row strong"><i /> <p><strong>Laboratory lead</strong>Laboratory has a clear path, but the stricter Life Science path is not shown.</p></div>
               <div className="guide-row review"><i /> <p><strong>Manual review</strong>A known condition, special plan, or use-classification issue controls.</p></div>
               <div className="guide-row low"><i /> <p><strong>Lower fit</strong>No clear Laboratory path appears in this first-pass layer.</p></div>
             </section>
@@ -1305,7 +1311,7 @@ export default function Home() {
 
           <div className="panel-note">
             <span className="note-index">!</span>
-            <p>This is an early site screen, not a permit determination. Green means Laboratory is principally permitted in the base district or supported by strong plan-area evidence—not that every suite is lab-ready.</p>
+            <p>This is an early site screen, not a permit determination. Purple preserves the stricter Life Science leads; green shows the broader Laboratory-only leads. Neither means every suite is lab-ready.</p>
           </div>
         </aside>
 
@@ -1380,7 +1386,8 @@ export default function Home() {
 
           <div className="lab-map-legend" aria-label="Lab screening legend">
             <p>Location signal</p>
-            <span><i className="strong" /> Strong lead</span>
+            <span><i className="life-science" /> Life Science + Lab</span>
+            <span><i className="strong" /> Laboratory lead</span>
             <span><i className="review" /> Manual review</span>
             <span><i className="low" /> Lower fit</span>
           </div>
