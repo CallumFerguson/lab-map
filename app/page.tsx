@@ -20,15 +20,23 @@ const INITIAL_VIEW = {
   pitch: 0,
 };
 
-const STRONG_CODES = new Set(['M-1', 'M-2', 'MB-RA']);
-const HISTORIC_PATH_CODES = new Set([
+const STRONG_CODES = new Set([
+  'C-2',
+  'M-1',
+  'M-2',
+  'MB-RA',
   'CMUO',
   'MUG',
+  'SALI',
+  'UMU',
+  'PDR-1-D',
+  'PDR-1-G',
+  'PDR-2',
+]);
+const HISTORIC_PATH_CODES = new Set([
   'MUO',
   'MUR',
-  'SALI',
   'SPD',
-  'UMU',
   'WMUG',
   'WMUO',
 ]);
@@ -92,7 +100,7 @@ function getFitTone(codeValue: unknown, categoryValue: unknown): FitTone {
   const code = String(codeValue ?? '').toUpperCase();
   const category = String(categoryValue ?? '');
 
-  if (STRONG_CODES.has(code)) return 'strong';
+  if (STRONG_CODES.has(code) || code.startsWith('C-3-')) return 'strong';
   if (
     code.startsWith('PDR-') ||
     HISTORIC_PATH_CODES.has(code) ||
@@ -167,15 +175,33 @@ function getZoneDetails(properties: Record<string, unknown>): ZoneDetails {
 function assessZone(zone: ZoneDetails): LabAssessment {
   const code = zone.zoning.toUpperCase();
 
+  if (code === 'C-2' || code.startsWith('C-3-')) {
+    return {
+      tone: 'strong',
+      label: 'Laboratory use permitted',
+      confidence: 'High confidence in the base-zoning signal',
+      summary:
+        'The current district table principally permits Laboratory use. Commercial buildings vary widely, so building systems and a feasible change of use may be more limiting than base zoning.',
+      evidence: [
+        'Laboratory is included in Non-Retail Sales and Service under the Planning Code.',
+        `${code} principally permits the applicable use class.`,
+      ],
+      verify: [
+        'Parcel overlays, prior conditions, and any change of use',
+        'A building layout capable of BSL-2 practices, lab HVAC, gas storage, and waste handling',
+      ],
+    };
+  }
+
   if (code === 'M-1') {
     return {
       tone: 'strong',
-      label: 'Strong zoning lead',
+      label: 'Laboratory use permitted',
       confidence: 'High confidence in the base-zoning signal',
       summary:
-        'The current M-district table permits Non-Retail Sales and Service, the use class that includes Life Science. This is the clearest zoning signal in the citywide layer for your proposed lab.',
+        'The current M-district table principally permits Non-Retail Sales and Service, the use class that includes Laboratory. This is a clear base-zoning signal for the proposed research lab.',
       evidence: [
-        'Life Science covers research using cells and advanced biological techniques.',
+        'Laboratory covers facilities used for scientific research, including BSL-1, BSL-2, and BSL-3 biological laboratories.',
         'M-1 permits the broader Non-Retail Sales and Service use class.',
       ],
       verify: [
@@ -194,7 +220,7 @@ function assessZone(zone: ZoneDetails): LabAssessment {
         'M-2 has the same strong base-use signal as M-1. Much of San Francisco’s M-2 land is Port-controlled or heavy-industrial, so lease controls, access, and building quality deserve extra scrutiny.',
       evidence: [
         'The M-district table permits Non-Retail Sales and Service in M-2.',
-        'Life Science sits within that use class under the current Planning Code.',
+        'Laboratory sits within that use class under the current Planning Code.',
       ],
       verify: [
         'Port or other landowner controls and parcel-specific entitlements',
@@ -206,17 +232,71 @@ function assessZone(zone: ZoneDetails): LabAssessment {
   if (code === 'MB-RA') {
     return {
       tone: 'strong',
-      label: 'Established life-science area',
+      label: 'Established laboratory area',
       confidence: 'High location confidence; parcel approval still required',
       summary:
-        'Mission Bay is an established biotech and life-science cluster with millions of square feet of entitled lab and office space. OCII redevelopment documents—not this base-zoning layer alone—control each parcel.',
+        'Mission Bay is an established biotech and laboratory cluster with substantial lab-ready space. OCII redevelopment documents—not this base-zoning layer alone—control each parcel.',
       evidence: [
-        'Mission Bay was planned and built with substantial life-science and biotech space.',
+        'Mission Bay was planned and built with substantial laboratory and biotech space.',
         'Existing lab buildings can reduce the hardest HVAC, power, gas, and waste-route problems.',
       ],
       verify: [
         'The parcel’s Mission Bay redevelopment plan and permitted-use documents',
         'Whether the offered suite already supports the proposed biosafety and automation program',
+      ],
+    };
+  }
+
+  if (['PDR-1-D', 'PDR-1-G', 'PDR-2'].includes(code)) {
+    return {
+      tone: 'strong',
+      label: 'Laboratory use permitted',
+      confidence: 'High confidence in the base-zoning signal',
+      summary:
+        'The current PDR table principally permits Laboratory use in this district. The proposed wet-lab operations still require building, fire, biosafety, and waste review.',
+      evidence: [
+        'Laboratory is listed as principally permitted in this PDR district.',
+        'The screen uses Laboratory only and does not apply the separate Life Science restriction.',
+      ],
+      verify: [
+        'Parcel overlays, prior conditions, and the proposed occupancy or change of use',
+        'Ventilation, CO₂ storage, emergency power, biosafety, and medical-waste handling',
+      ],
+    };
+  }
+
+  if (code === 'PDR-1-B') {
+    return {
+      tone: 'review',
+      label: 'Size-limited laboratory path',
+      confidence: 'High confidence; suite area controls the result',
+      summary:
+        'Laboratory is principally permitted in PDR-1-B only up to 2,500 gross square feet. A larger lab needs direct Planning review before relying on this district.',
+      evidence: [
+        'The PDR table lists Laboratory as principally permitted with a size limitation.',
+        'The citywide zoning layer does not include the proposed lab floor area.',
+      ],
+      verify: [
+        'The gross square footage devoted to the laboratory use',
+        'Any parcel overlays, prior approvals, or other controlling conditions',
+      ],
+    };
+  }
+
+  if (['CMUO', 'MUG', 'SALI', 'UMU'].includes(code)) {
+    return {
+      tone: 'strong',
+      label: 'Laboratory use permitted',
+      confidence: 'High confidence in the base-zoning signal',
+      summary:
+        'This district principally permits Non-Retail Sales and Service, which includes Laboratory. The separate restriction on Life Science is not applied because this screen is fixed to Laboratory only.',
+      evidence: [
+        'The district principally permits Non-Retail Sales and Service.',
+        'Laboratory is a use within that category under the current Planning Code.',
+      ],
+      verify: [
+        'Written confirmation that the proposed program remains classified as Laboratory',
+        'Building conversion, ventilation, fire, gas, biosafety, and waste requirements',
       ],
     };
   }
@@ -227,9 +307,9 @@ function assessZone(zone: ZoneDetails): LabAssessment {
       label: 'Promising only on named blocks',
       confidence: 'Medium confidence; block lookup required',
       summary:
-        'The Potrero Power Station district permits Life Science on Blocks 2, 3, 11, 12, and 15, but not across the whole district. This map layer does not identify those blocks.',
+        'The Potrero Power Station district permits Laboratory on Blocks 2, 3, 11, 12, and 15, but not across the whole district. This map layer does not identify those blocks.',
       evidence: [
-        'A specific Life Science pathway exists in the special-use district.',
+        'A specific Laboratory pathway exists in the special-use district.',
         'The citywide zoning polygon is too coarse to tell whether a clicked site is on an eligible block.',
       ],
       verify: [
@@ -242,16 +322,16 @@ function assessZone(zone: ZoneDetails): LabAssessment {
   if (code.startsWith('PDR-')) {
     return {
       tone: 'review',
-      label: 'Use classification is the key issue',
-      confidence: 'High confidence that written Planning review is needed',
+      label: 'District-specific review needed',
+      confidence: 'Medium confidence from the citywide layer',
       summary:
-        'PDR tables generally permit an ordinary Laboratory but list Life Science as not permitted. Because human iPSC-derived cell research likely fits the separate Life Science definition, do not rely on a generic “lab allowed” listing.',
+        'This PDR designation is not one of the clear Laboratory permissions identified by this screen. Confirm the exact current district table before pursuing a lease.',
       evidence: [
-        'San Francisco distinguishes Laboratory from Life Science.',
-        'Your cell-based R&D is likely to be reviewed as Life Science even without manufacturing.',
+        'PDR districts have different controls for Laboratory use.',
+        'The broad PDR category alone is not a permit determination.',
       ],
       verify: [
-        'A written use-classification determination from SF Planning',
+        'The exact Laboratory entry in the applicable district table',
         'Whether a special entitlement, prior approval, or another controlling plan changes the result',
       ],
     };
@@ -263,9 +343,9 @@ function assessZone(zone: ZoneDetails): LabAssessment {
       label: 'Possible historic-building pathway',
       confidence: 'Medium confidence; building status controls the answer',
       summary:
-        'The base table generally does not permit Life Science here. A current rule can permit the use in a qualifying historic building, so the building—not just the zoning polygon—determines whether this is viable.',
+        'The base table generally does not permit Laboratory here. A current rule can permit the use in a qualifying historic building, so the building—not just the zoning polygon—determines whether this is viable.',
       evidence: [
-        'Life Science is generally not permitted in these mixed-use base districts.',
+        'Laboratory is generally not permitted in this mixed-use base district.',
         'Qualifying historic buildings can receive a broader principally permitted use pathway.',
       ],
       verify: [
@@ -281,8 +361,8 @@ function assessZone(zone: ZoneDetails): LabAssessment {
       label: 'Mission Bay plan review',
       confidence: 'Medium confidence; redevelopment documents control',
       summary:
-        'This Mission Bay office designation sits in a strong life-science ecosystem, but the zoning label alone does not establish that your lab use is allowed in the specific building.',
-      evidence: ['Mission Bay has extensive life-science activity.', 'Parcel-level OCII documents govern allowed uses.'],
+        'This Mission Bay office designation sits in a strong laboratory ecosystem, but the zoning label alone does not establish that Laboratory use is allowed in the specific building.',
+      evidence: ['Mission Bay has extensive laboratory activity.', 'Parcel-level OCII documents govern allowed uses.'],
       verify: ['The applicable Mission Bay plan and owner entitlement', 'Existing lab occupancy and building systems'],
     };
   }
@@ -297,8 +377,8 @@ function assessZone(zone: ZoneDetails): LabAssessment {
       label: 'Special controls need review',
       confidence: 'Low-to-medium confidence from this layer alone',
       summary:
-        'This broader district type may have a path, but it is not one of the citywide layer’s clear high-confidence signals for Life Science. The exact district table and any special plan control the answer.',
-      evidence: ['The broad district category is not a legal use determination.', 'Life Science has its own Planning Code definition and controls.'],
+        'This broader district type may have a path, but it is not one of the citywide layer’s clear high-confidence signals for Laboratory. The exact district table and any special plan control the answer.',
+      evidence: ['The broad district category is not a legal use determination.', 'Laboratory has its own Planning Code definition and controls.'],
       verify: ['The exact current use table and overlays', 'Any prior approvals tied to the parcel or building'],
     };
   }
@@ -308,8 +388,8 @@ function assessZone(zone: ZoneDetails): LabAssessment {
     label: 'Lower-fit starting point',
     confidence: 'High confidence that no clear base-zoning path is shown',
     summary:
-      'This district does not provide a clear Life Science path in the citywide screen. It may still have a parcel-specific exception, but it is a less efficient place to begin a site search.',
-    evidence: ['The district is not identified as a strong or conditional Life Science location.', 'A parcel exception cannot be ruled out from this dataset.'],
+      'This district does not provide a clear Laboratory path in the citywide screen. It may still have a parcel-specific exception, but it is a less efficient place to begin a site search.',
+    evidence: ['The district is not identified as a strong or conditional Laboratory location.', 'A parcel exception cannot be ruled out from this dataset.'],
     verify: ['Whether a special district, existing entitlement, or legal nonconforming use applies', 'Whether a different site would avoid entitlement time and risk'],
   };
 }
@@ -713,6 +793,7 @@ export default function Home() {
               <span className="profile-lock">Tailored</span>
             </div>
             <div className="profile-tags">
+              <span>Laboratory classification only</span>
               <span>Human iPSC liver cells</span>
               <span>Bioelectric R&amp;D</span>
               <span>BSL-2 practices</span>
@@ -720,7 +801,7 @@ export default function Home() {
               <span>Automated CO₂ incubation</span>
               <span>Biohazard waste</span>
             </div>
-            <p>No animals or manufacturing assumed. CO₂ cylinders and ordinary research quantities of regulated materials are assumed.</p>
+            <p>Land-use screening assumes Laboratory—not Life Science. No animals or manufacturing assumed.</p>
           </section>
 
           {detailZone && assessment ? (
@@ -759,9 +840,9 @@ export default function Home() {
           ) : (
             <section className="screening-guide">
               <div className="section-heading"><span>How to read the map</span></div>
-              <div className="guide-row strong"><i /> <p><strong>Strong lead</strong>Clear base-zoning support or an established life-science plan area.</p></div>
+              <div className="guide-row strong"><i /> <p><strong>Strong lead</strong>Laboratory is principally permitted or the plan area has strong lab support.</p></div>
               <div className="guide-row review"><i /> <p><strong>Manual review</strong>A known condition, special plan, or use-classification issue controls.</p></div>
-              <div className="guide-row low"><i /> <p><strong>Lower fit</strong>No clear Life Science path appears in this first-pass layer.</p></div>
+              <div className="guide-row low"><i /> <p><strong>Lower fit</strong>No clear Laboratory path appears in this first-pass layer.</p></div>
             </section>
           )}
 
@@ -771,14 +852,14 @@ export default function Home() {
           </details>
 
           <div className="resource-links">
-            <a href="https://codelibrary.amlegal.com/codes/san_francisco/latest/sf_planning/0-0-0-27132" target="_blank" rel="noreferrer">Life Science definition ↗</a>
+            <a href="https://codelibrary.amlegal.com/codes/san_francisco/latest/sf_planning/0-0-0-49163" target="_blank" rel="noreferrer">Laboratory definition ↗</a>
             <a href="https://sf-fire.org/services/permits" target="_blank" rel="noreferrer">Fire permits ↗</a>
             <a href="https://www.cdc.gov/labs/bmbl/index.html" target="_blank" rel="noreferrer">CDC biosafety ↗</a>
           </div>
 
           <div className="panel-note">
             <span className="note-index">!</span>
-            <p>This is an early site screen, not a permit determination. A green area means strong evidence for the land-use path—not that every suite is lab-ready or finally approved.</p>
+            <p>This is an early site screen, not a permit determination. Green means Laboratory is principally permitted in the base district or supported by strong plan-area evidence—not that every suite is lab-ready.</p>
           </div>
         </aside>
 

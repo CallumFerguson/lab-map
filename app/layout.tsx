@@ -3,7 +3,7 @@ import './globals.css';
 
 const title = 'SF Bio Lab Site Finder';
 const description =
-  'Screen San Francisco locations for an automated human iPSC life-science lab using official zoning boundaries and tailored parcel guidance.';
+  'Screen San Francisco locations for an automated human iPSC research laboratory using official zoning boundaries and tailored parcel guidance.';
 const socialImage =
   'https://sf-zoning-atlas.coolcorps.chatgpt.site/og.png';
 
