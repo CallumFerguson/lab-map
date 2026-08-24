@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import maplibregl, {
-  type FilterSpecification,
   type GeoJSONSource,
   type Map as MapLibreMap,
   type MapMouseEvent,
@@ -15,71 +14,26 @@ const DATA_URL =
 const ADDRESS_API = 'https://data.sfgov.org/resource/3mea-di5p.json';
 
 const INITIAL_VIEW = {
-  center: [-122.438, 37.758] as [number, number],
-  zoom: 11.55,
+  center: [-122.424, 37.758] as [number, number],
+  zoom: 11.7,
   bearing: 0,
   pitch: 0,
 };
 
-const ZONING_COLORS = [
-  'match',
-  ['get', 'gen'],
-  'Residential',
-  '#f1c75b',
-  'Mixed Use',
-  '#ef9562',
-  'Mixed',
-  '#ef9562',
-  'Commercial',
-  '#c27ad3',
-  'Industrial',
-  '#6d96a8',
-  'Public',
-  '#7ebf8d',
-  '#a5a29b',
-];
+const STRONG_CODES = new Set(['M-1', 'M-2', 'MB-RA']);
+const HISTORIC_PATH_CODES = new Set([
+  'CMUO',
+  'MUG',
+  'MUO',
+  'MUR',
+  'SALI',
+  'SPD',
+  'UMU',
+  'WMUG',
+  'WMUO',
+]);
 
-const CATEGORIES = [
-  { label: 'All zones', value: 'all', color: '#f05a3c' },
-  { label: 'Residential', value: 'Residential', color: '#f1c75b' },
-  { label: 'Mixed use', value: 'Mixed Use', color: '#ef9562' },
-  { label: 'Commercial', value: 'Commercial', color: '#c27ad3' },
-  { label: 'Industrial', value: 'Industrial', color: '#6d96a8' },
-  { label: 'Public', value: 'Public', color: '#7ebf8d' },
-] as const;
-
-const LAB_PROFILES = [
-  {
-    value: 'dry',
-    label: 'Dry / computational',
-    shortLabel: 'Dry lab',
-    detail: 'Computing, instruments, or office-like R&D with little wet work.',
-  },
-  {
-    value: 'standard',
-    label: 'Analytical laboratory',
-    shortLabel: 'Standard lab',
-    detail: 'Chemistry, engineering, development, testing, or support lab.',
-  },
-  {
-    value: 'life_science',
-    label: 'Life-science wet lab',
-    shortLabel: 'Life science',
-    detail: 'Biological R&D tied to products or services; a distinct SF use.',
-  },
-  {
-    value: 'pilot',
-    label: 'Pilot production',
-    shortLabel: 'Pilot production',
-    detail: 'Research plus small-batch processing or manufacturing.',
-  },
-] as const;
-
-type ExplorerMode = 'zoning' | 'lab';
-type CategoryValue = (typeof CATEGORIES)[number]['value'];
-type LabProfile = (typeof LAB_PROFILES)[number]['value'];
-type LabNeed = 'hazmat' | 'gases' | 'animals' | 'clinical';
-type FitTone = 'lead' | 'review' | 'low';
+type FitTone = 'strong' | 'review' | 'low';
 type ZoningLoadPhase = 'connecting' | 'downloading' | 'parsing' | 'rendering' | 'ready';
 
 type ZoningLoadState = {
@@ -107,18 +61,50 @@ type AddressResult = {
 type LabAssessment = {
   tone: FitTone;
   label: string;
-  reason: string;
+  confidence: string;
+  summary: string;
+  evidence: string[];
+  verify: string[];
 };
 
 const FIT_META: Record<FitTone, { label: string; color: string }> = {
-  lead: { label: 'Better starting lead', color: '#2d9a82' },
-  review: { label: 'Needs zoning review', color: '#d68a2f' },
-  low: { label: 'Lower-fit signal', color: '#8b8f8b' },
+  strong: { label: 'Strong location lead', color: '#14856f' },
+  review: { label: 'Manual review needed', color: '#d28a27' },
+  low: { label: 'Lower-fit starting point', color: '#9a9c96' },
 };
+
+const LAB_FILL_COLORS = [
+  'match',
+  ['get', 'lab_fit'],
+  'strong',
+  FIT_META.strong.color,
+  'review',
+  '#e2a34a',
+  '#c5c5be',
+];
 
 function formatBytes(bytes: number) {
   if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function getFitTone(codeValue: unknown, categoryValue: unknown): FitTone {
+  const code = String(codeValue ?? '').toUpperCase();
+  const category = String(categoryValue ?? '');
+
+  if (STRONG_CODES.has(code)) return 'strong';
+  if (
+    code.startsWith('PDR-') ||
+    HISTORIC_PATH_CODES.has(code) ||
+    code === 'PPS-MU' ||
+    code === 'MB-O' ||
+    category === 'Industrial' ||
+    category === 'Mixed Use' ||
+    category === 'Mixed'
+  ) {
+    return 'review';
+  }
+  return 'low';
 }
 
 async function downloadZoningData(
@@ -178,187 +164,164 @@ function getZoneDetails(properties: Record<string, unknown>): ZoneDetails {
   };
 }
 
-function buildFilter(category: CategoryValue, search: string): FilterSpecification {
-  const clauses: unknown[] = ['all'];
-
-  if (category !== 'all') {
-    clauses.push(['==', ['get', 'gen'], category]);
-  }
-
-  const query = search.trim().toLocaleLowerCase();
-  if (query) {
-    clauses.push([
-      'any',
-      ['in', query, ['downcase', ['to-string', ['get', 'zoning_sim']]]],
-      ['in', query, ['downcase', ['to-string', ['get', 'districtna']]]],
-    ]);
-  }
-
-  return clauses as FilterSpecification;
-}
-
-function getLabColors(profile: LabProfile) {
-  if (profile === 'dry') {
-    return [
-      'match',
-      ['get', 'gen'],
-      'Commercial',
-      '#2d9a82',
-      'Mixed Use',
-      '#2d9a82',
-      'Mixed',
-      '#2d9a82',
-      'Industrial',
-      '#e0a14c',
-      '#c7c7c0',
-    ];
-  }
-
-  if (profile === 'pilot') {
-    return [
-      'match',
-      ['get', 'gen'],
-      'Industrial',
-      '#2d9a82',
-      'Mixed Use',
-      '#e0a14c',
-      'Mixed',
-      '#e0a14c',
-      '#c7c7c0',
-    ];
-  }
-
-  if (profile === 'life_science') {
-    return [
-      'match',
-      ['get', 'gen'],
-      'Industrial',
-      '#e0a14c',
-      'Mixed Use',
-      '#e0a14c',
-      'Mixed',
-      '#e0a14c',
-      'Commercial',
-      '#d7b36f',
-      '#c7c7c0',
-    ];
-  }
-
-  return [
-    'match',
-    ['get', 'gen'],
-    'Industrial',
-    '#2d9a82',
-    'Mixed Use',
-    '#e0a14c',
-    'Mixed',
-    '#e0a14c',
-    'Commercial',
-    '#d7b36f',
-    '#c7c7c0',
-  ];
-}
-
-function assessZone(zone: ZoneDetails, profile: LabProfile): LabAssessment {
+function assessZone(zone: ZoneDetails): LabAssessment {
   const code = zone.zoning.toUpperCase();
-  const isPdr = code.startsWith('PDR-');
-  const isLegacyIndustrial = code === 'M-1' || code === 'M-2';
-  const isUmu = code === 'UMU';
-  const isMixed = zone.category === 'Mixed Use' || zone.category === 'Mixed';
-  const isCommercial = zone.category === 'Commercial';
-  const isIndustrial = zone.category === 'Industrial';
 
-  if (profile === 'dry') {
-    if (isCommercial || isMixed) {
-      return {
-        tone: 'lead',
-        label: FIT_META.lead.label,
-        reason:
-          'This is a stronger location signal for office-like R&D. Confirm whether the proposed build-out is classified as Office or Laboratory.',
-      };
-    }
-    if (isIndustrial) {
-      return {
-        tone: 'review',
-        label: FIT_META.review.label,
-        reason:
-          'Industrial districts may accommodate research uses, but office-like activity can have separate controls.',
-      };
-    }
+  if (code === 'M-1') {
+    return {
+      tone: 'strong',
+      label: 'Strong zoning lead',
+      confidence: 'High confidence in the base-zoning signal',
+      summary:
+        'The current M-district table permits Non-Retail Sales and Service, the use class that includes Life Science. This is the clearest zoning signal in the citywide layer for your proposed lab.',
+      evidence: [
+        'Life Science covers research using cells and advanced biological techniques.',
+        'M-1 permits the broader Non-Retail Sales and Service use class.',
+      ],
+      verify: [
+        'Parcel overlays, prior conditions, and any change of use',
+        'A building layout capable of BSL-2 practices, lab HVAC, gas storage, and waste handling',
+      ],
+    };
   }
 
-  if (profile === 'standard') {
-    if ((isPdr && code !== 'PDR-1-B') || isLegacyIndustrial || isUmu) {
-      return {
-        tone: 'lead',
-        label: FIT_META.lead.label,
-        reason:
-          'The current Planning Code identifies ordinary Laboratory use in several PDR districts and UMU, subject to district-specific limits and use classification.',
-      };
-    }
-    if (code === 'PDR-1-B') {
-      return {
-        tone: 'review',
-        label: FIT_META.review.label,
-        reason:
-          'Laboratory use in PDR-1-B has a size limitation in the current zoning table. Confirm the proposed floor area with Planning.',
-      };
-    }
-    if (isIndustrial || isMixed || isCommercial) {
-      return {
-        tone: 'review',
-        label: FIT_META.review.label,
-        reason:
-          'This broader district type is worth screening, but the specific use table, size, floor, and any special-use overlay control the result.',
-      };
-    }
+  if (code === 'M-2') {
+    return {
+      tone: 'strong',
+      label: 'Strong zoning lead',
+      confidence: 'High base-zoning confidence; site context matters',
+      summary:
+        'M-2 has the same strong base-use signal as M-1. Much of San Francisco’s M-2 land is Port-controlled or heavy-industrial, so lease controls, access, and building quality deserve extra scrutiny.',
+      evidence: [
+        'The M-district table permits Non-Retail Sales and Service in M-2.',
+        'Life Science sits within that use class under the current Planning Code.',
+      ],
+      verify: [
+        'Port or other landowner controls and parcel-specific entitlements',
+        'Flood, seismic, utility, emergency-power, and employee-access conditions',
+      ],
+    };
   }
 
-  if (profile === 'life_science') {
-    if (isPdr || isUmu) {
-      return {
-        tone: 'low',
-        label: 'Base district caution',
-        reason:
-          'San Francisco treats Life Science separately from ordinary Laboratory use; current PDR and UMU tables show Life Science as not permitted unless another entitlement or special control applies.',
-      };
-    }
-    if (isIndustrial || isMixed || isCommercial) {
-      return {
-        tone: 'review',
-        label: FIT_META.review.label,
-        reason:
-          'A life-science use needs parcel-level review for its exact district, special-use controls, existing entitlements, and operating model.',
-      };
-    }
+  if (code === 'MB-RA') {
+    return {
+      tone: 'strong',
+      label: 'Established life-science area',
+      confidence: 'High location confidence; parcel approval still required',
+      summary:
+        'Mission Bay is an established biotech and life-science cluster with millions of square feet of entitled lab and office space. OCII redevelopment documents—not this base-zoning layer alone—control each parcel.',
+      evidence: [
+        'Mission Bay was planned and built with substantial life-science and biotech space.',
+        'Existing lab buildings can reduce the hardest HVAC, power, gas, and waste-route problems.',
+      ],
+      verify: [
+        'The parcel’s Mission Bay redevelopment plan and permitted-use documents',
+        'Whether the offered suite already supports the proposed biosafety and automation program',
+      ],
+    };
   }
 
-  if (profile === 'pilot') {
-    if ((isPdr && code !== 'PDR-1-B') || isLegacyIndustrial) {
-      return {
-        tone: 'lead',
-        label: FIT_META.lead.label,
-        reason:
-          'PDR and legacy industrial areas are stronger first-pass leads for a project that combines research with processing, storage, or light manufacturing.',
-      };
-    }
-    if (isIndustrial || isMixed) {
-      return {
-        tone: 'review',
-        label: FIT_META.review.label,
-        reason:
-          'The manufacturing component needs its own use classification and may change occupancy, fire, loading, and environmental review.',
-      };
-    }
+  if (code === 'PPS-MU') {
+    return {
+      tone: 'review',
+      label: 'Promising only on named blocks',
+      confidence: 'Medium confidence; block lookup required',
+      summary:
+        'The Potrero Power Station district permits Life Science on Blocks 2, 3, 11, 12, and 15, but not across the whole district. This map layer does not identify those blocks.',
+      evidence: [
+        'A specific Life Science pathway exists in the special-use district.',
+        'The citywide zoning polygon is too coarse to tell whether a clicked site is on an eligible block.',
+      ],
+      verify: [
+        'The official PPS block number and applicable special-use table',
+        'Development-phase timing, landlord delivery scope, and lab-ready infrastructure',
+      ],
+    };
+  }
+
+  if (code.startsWith('PDR-')) {
+    return {
+      tone: 'review',
+      label: 'Use classification is the key issue',
+      confidence: 'High confidence that written Planning review is needed',
+      summary:
+        'PDR tables generally permit an ordinary Laboratory but list Life Science as not permitted. Because human iPSC-derived cell research likely fits the separate Life Science definition, do not rely on a generic “lab allowed” listing.',
+      evidence: [
+        'San Francisco distinguishes Laboratory from Life Science.',
+        'Your cell-based R&D is likely to be reviewed as Life Science even without manufacturing.',
+      ],
+      verify: [
+        'A written use-classification determination from SF Planning',
+        'Whether a special entitlement, prior approval, or another controlling plan changes the result',
+      ],
+    };
+  }
+
+  if (HISTORIC_PATH_CODES.has(code)) {
+    return {
+      tone: 'review',
+      label: 'Possible historic-building pathway',
+      confidence: 'Medium confidence; building status controls the answer',
+      summary:
+        'The base table generally does not permit Life Science here. A current rule can permit the use in a qualifying historic building, so the building—not just the zoning polygon—determines whether this is viable.',
+      evidence: [
+        'Life Science is generally not permitted in these mixed-use base districts.',
+        'Qualifying historic buildings can receive a broader principally permitted use pathway.',
+      ],
+      verify: [
+        'Whether the exact building qualifies under Planning Code §803.9(c)',
+        'Historic-preservation constraints on vents, rooftop equipment, generators, and interior work',
+      ],
+    };
+  }
+
+  if (code === 'MB-O') {
+    return {
+      tone: 'review',
+      label: 'Mission Bay plan review',
+      confidence: 'Medium confidence; redevelopment documents control',
+      summary:
+        'This Mission Bay office designation sits in a strong life-science ecosystem, but the zoning label alone does not establish that your lab use is allowed in the specific building.',
+      evidence: ['Mission Bay has extensive life-science activity.', 'Parcel-level OCII documents govern allowed uses.'],
+      verify: ['The applicable Mission Bay plan and owner entitlement', 'Existing lab occupancy and building systems'],
+    };
+  }
+
+  if (
+    zone.category === 'Industrial' ||
+    zone.category === 'Mixed Use' ||
+    zone.category === 'Mixed'
+  ) {
+    return {
+      tone: 'review',
+      label: 'Special controls need review',
+      confidence: 'Low-to-medium confidence from this layer alone',
+      summary:
+        'This broader district type may have a path, but it is not one of the citywide layer’s clear high-confidence signals for Life Science. The exact district table and any special plan control the answer.',
+      evidence: ['The broad district category is not a legal use determination.', 'Life Science has its own Planning Code definition and controls.'],
+      verify: ['The exact current use table and overlays', 'Any prior approvals tied to the parcel or building'],
+    };
   }
 
   return {
     tone: 'low',
-    label: FIT_META.low.label,
-    reason:
-      'This district is a lower-signal starting point for the selected lab model. Ask Planning to confirm whether any laboratory use is available at this parcel.',
+    label: 'Lower-fit starting point',
+    confidence: 'High confidence that no clear base-zoning path is shown',
+    summary:
+      'This district does not provide a clear Life Science path in the citywide screen. It may still have a parcel-specific exception, but it is a less efficient place to begin a site search.',
+    evidence: ['The district is not identified as a strong or conditional Life Science location.', 'A parcel exception cannot be ruled out from this dataset.'],
+    verify: ['Whether a special district, existing entitlement, or legal nonconforming use applies', 'Whether a different site would avoid entitlement time and risk'],
   };
 }
+
+const BUILDING_CHECKS = [
+  'Existing lab occupancy or a feasible change of use',
+  'BSL-2 work practices and a suitable Class II biosafety cabinet setup',
+  'Stable HVAC, temperature, humidity, sinks, eyewash, and decontamination route',
+  'CO₂ storage, ventilation/alarm strategy, seismic restraint, and Fire review',
+  'Clean power, data, bench capacity, and backup power for incubators, freezers, and automation',
+  'Biohazard/medical-waste storage and a practical pickup route',
+];
 
 export default function Home() {
   const mapContainerRef = useRef<HTMLDivElement>(null);
@@ -373,37 +336,18 @@ export default function Home() {
     totalBytes: null,
     featureCount: null,
   });
-  const [mode, setMode] = useState<ExplorerMode>('lab');
-  const [category, setCategory] = useState<CategoryValue>('all');
-  const [search, setSearch] = useState('');
   const [addressQuery, setAddressQuery] = useState('');
   const [addressResults, setAddressResults] = useState<AddressResult[]>([]);
   const [addressSearching, setAddressSearching] = useState(false);
   const [selectedAddress, setSelectedAddress] = useState<AddressResult | null>(null);
-  const [labProfile, setLabProfile] = useState<LabProfile>('life_science');
-  const [labNeeds, setLabNeeds] = useState<Record<LabNeed, boolean>>({
-    hazmat: true,
-    gases: true,
-    animals: false,
-    clinical: true,
-  });
   const [selectedZone, setSelectedZone] = useState<ZoneDetails | null>(null);
   const [hoveredZone, setHoveredZone] = useState<ZoneDetails | null>(null);
-  const [zoneCount, setZoneCount] = useState<number | null>(null);
   const [panelOpen, setPanelOpen] = useState(false);
 
-  const activeCategory = useMemo(
-    () => CATEGORIES.find((item) => item.value === category) ?? CATEGORIES[0],
-    [category],
-  );
-  const activeLabProfile = useMemo(
-    () => LAB_PROFILES.find((item) => item.value === labProfile) ?? LAB_PROFILES[1],
-    [labProfile],
-  );
   const detailZone = selectedZone ?? hoveredZone;
-  const labAssessment = useMemo(
-    () => (detailZone ? assessZone(detailZone, labProfile) : null),
-    [detailZone, labProfile],
+  const assessment = useMemo(
+    () => (detailZone ? assessZone(detailZone) : null),
+    [detailZone],
   );
   const downloadPercent = zoningLoad.totalBytes
     ? Math.min(100, Math.round((zoningLoad.loadedBytes / zoningLoad.totalBytes) * 100))
@@ -448,14 +392,8 @@ export default function Home() {
     const zoningDownload = new AbortController();
 
     mapRef.current = map;
-    map.addControl(
-      new maplibregl.NavigationControl({ visualizePitch: true }),
-      'top-right',
-    );
-    map.addControl(
-      new maplibregl.AttributionControl({ compact: true }),
-      'bottom-right',
-    );
+    map.addControl(new maplibregl.NavigationControl(), 'top-right');
+    map.addControl(new maplibregl.AttributionControl({ compact: true }), 'bottom-right');
 
     map.on('load', async () => {
       let lastProgressUpdate = 0;
@@ -478,71 +416,84 @@ export default function Home() {
         );
 
         if (zoningDownload.signal.aborted) return;
+        const screeningData: FeatureCollection<Geometry> = {
+          ...zoningData,
+          features: zoningData.features.map((feature) => ({
+            ...feature,
+            properties: {
+              ...(feature.properties ?? {}),
+              lab_fit: getFitTone(
+                feature.properties?.zoning_sim ?? feature.properties?.zoning,
+                feature.properties?.gen,
+              ),
+            },
+          })),
+        };
+
         setZoningLoad((current) => ({
           ...current,
           phase: 'rendering',
-          featureCount: zoningData.features.length,
+          featureCount: screeningData.features.length,
         }));
 
         map.addSource('sf-zoning', {
           type: 'geojson',
-          data: zoningData,
+          data: screeningData,
           generateId: true,
         });
 
-      map.addLayer({
-        id: 'zoning-fill',
-        type: 'fill',
-        source: 'sf-zoning',
-        paint: {
-          'fill-color': ZONING_COLORS,
-          'fill-opacity': [
-            'case',
-            ['boolean', ['feature-state', 'hover'], false],
-            0.86,
-            0.66,
-          ],
-        },
-      });
+        map.addLayer({
+          id: 'zoning-fill',
+          type: 'fill',
+          source: 'sf-zoning',
+          paint: {
+            'fill-color': LAB_FILL_COLORS,
+            'fill-opacity': [
+              'case',
+              ['boolean', ['feature-state', 'hover'], false],
+              0.9,
+              0.72,
+            ],
+          },
+        });
 
-      map.addLayer({
-        id: 'zoning-outline',
-        type: 'line',
-        source: 'sf-zoning',
-        paint: {
-          'line-color': [
-            'case',
-            ['boolean', ['feature-state', 'hover'], false],
-            '#171917',
-            'rgba(42, 45, 42, 0.34)',
-          ],
-          'line-width': [
-            'case',
-            ['boolean', ['feature-state', 'hover'], false],
-            2.2,
-            ['interpolate', ['linear'], ['zoom'], 10, 0.35, 16, 1.15],
-          ],
-        },
-      });
+        map.addLayer({
+          id: 'zoning-outline',
+          type: 'line',
+          source: 'sf-zoning',
+          paint: {
+            'line-color': [
+              'case',
+              ['boolean', ['feature-state', 'hover'], false],
+              '#171917',
+              'rgba(42, 45, 42, 0.34)',
+            ],
+            'line-width': [
+              'case',
+              ['boolean', ['feature-state', 'hover'], false],
+              2.2,
+              ['interpolate', ['linear'], ['zoom'], 10, 0.35, 16, 1.15],
+            ],
+          },
+        });
 
-      map.addLayer({
-        id: 'zoning-labels',
-        type: 'symbol',
-        source: 'sf-zoning',
-        minzoom: 13.3,
-        layout: {
-          'text-field': ['get', 'zoning_sim'],
-          'text-size': ['interpolate', ['linear'], ['zoom'], 13, 9, 16, 11],
-          'text-font': ['Open Sans Semibold'],
-          'text-allow-overlap': false,
-        },
-        paint: {
-          'text-color': '#242624',
-          'text-halo-color': 'rgba(255, 252, 245, 0.88)',
-          'text-halo-width': 1.25,
-        },
-      });
-
+        map.addLayer({
+          id: 'zoning-labels',
+          type: 'symbol',
+          source: 'sf-zoning',
+          minzoom: 13.3,
+          layout: {
+            'text-field': ['get', 'zoning_sim'],
+            'text-size': ['interpolate', ['linear'], ['zoom'], 13, 9, 16, 11],
+            'text-font': ['Open Sans Semibold'],
+            'text-allow-overlap': false,
+          },
+          paint: {
+            'text-color': '#242624',
+            'text-halo-color': 'rgba(255, 252, 245, 0.9)',
+            'text-halo-width': 1.25,
+          },
+        });
       } catch (error) {
         if (!(error instanceof DOMException && error.name === 'AbortError')) {
           setLoadError(true);
@@ -554,7 +505,6 @@ export default function Home() {
       if (event.sourceId !== 'sf-zoning' || !event.isSourceLoaded) return;
       const source = map.getSource('sf-zoning') as GeoJSONSource | undefined;
       if (!source) return;
-      setZoneCount(map.querySourceFeatures('sf-zoning').length);
       setMapReady(true);
       setZoningLoad((current) => ({ ...current, phase: 'ready' }));
     });
@@ -576,10 +526,7 @@ export default function Home() {
         clearHover();
         if (feature.id !== undefined) {
           hoveredFeatureRef.current = feature.id;
-          map.setFeatureState(
-            { source: 'sf-zoning', id: feature.id },
-            { hover: true },
-          );
+          map.setFeatureState({ source: 'sf-zoning', id: feature.id }, { hover: true });
         }
       }
       setHoveredZone(getZoneDetails(feature.properties ?? {}));
@@ -595,7 +542,7 @@ export default function Home() {
       if (!feature) return;
       setSelectedAddress(null);
       setSelectedZone(getZoneDetails(feature.properties ?? {}));
-      setPanelOpen(false);
+      setPanelOpen(true);
     });
     map.on('error', (event) => {
       const message = String(event.error?.message ?? '');
@@ -613,27 +560,7 @@ export default function Home() {
   }, [clearHover]);
 
   useEffect(() => {
-    const map = mapRef.current;
-    if (!mapReady || !map) return;
-    const filter = buildFilter(
-      mode === 'zoning' ? category : 'all',
-      mode === 'zoning' ? search : '',
-    );
-    ['zoning-fill', 'zoning-outline', 'zoning-labels'].forEach((layer) => {
-      map.setFilter(layer, filter);
-    });
-    map.setPaintProperty(
-      'zoning-fill',
-      'fill-color',
-      mode === 'lab' ? getLabColors(labProfile) : ZONING_COLORS,
-    );
-    clearHover();
-  }, [category, search, mapReady, clearHover, mode, labProfile]);
-
-  useEffect(() => {
-    if (mode !== 'lab' || addressQuery.trim().length < 3) {
-      return;
-    }
+    if (addressQuery.trim().length < 3 || selectedAddress?.address === addressQuery) return;
 
     const controller = new AbortController();
     const timer = window.setTimeout(async () => {
@@ -665,18 +592,7 @@ export default function Home() {
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [addressQuery, mode]);
-
-  const switchMode = (nextMode: ExplorerMode) => {
-    setMode(nextMode);
-    setSelectedZone(null);
-    setSelectedAddress(null);
-    setSearch('');
-    setCategory('all');
-    setPanelOpen(false);
-    addressMarkerRef.current?.remove();
-    addressMarkerRef.current = null;
-  };
+  }, [addressQuery, selectedAddress]);
 
   const selectAddress = (result: AddressResult) => {
     const coordinates: [number, number] = [
@@ -690,7 +606,7 @@ export default function Home() {
     setAddressQuery(result.address);
     setAddressResults([]);
     setSelectedZone(null);
-    setPanelOpen(false);
+    setPanelOpen(true);
     addressMarkerRef.current?.remove();
     const markerElement = document.createElement('span');
     markerElement.className = 'address-marker';
@@ -701,43 +617,28 @@ export default function Home() {
     map.once('idle', () => inspectPoint(coordinates));
   };
 
-  const toggleNeed = (need: LabNeed) => {
-    setLabNeeds((current) => ({ ...current, [need]: !current[need] }));
-  };
-
   const resetView = () => {
     addressMarkerRef.current?.remove();
     addressMarkerRef.current = null;
+    setAddressQuery('');
+    setAddressResults([]);
     setSelectedAddress(null);
     setSelectedZone(null);
+    setPanelOpen(false);
     mapRef.current?.easeTo({ ...INITIAL_VIEW, duration: 900 });
   };
 
   return (
     <main className="app-shell">
       <header className="topbar">
-        <a className="brand" href="#map" aria-label="SF Zoning Atlas home">
+        <a className="brand" href="#map" aria-label="SF Bio Lab Site Finder home">
           <span className="brand-mark">SF</span>
-          <span>Zoning Atlas</span>
+          <span>Bio Lab Site Finder</span>
         </a>
-        <nav className="mode-switch" aria-label="Explorer mode">
-          <button
-            type="button"
-            className={mode === 'zoning' ? 'active' : ''}
-            onClick={() => switchMode('zoning')}
-            aria-pressed={mode === 'zoning'}
-          >
-            Zoning
-          </button>
-          <button
-            type="button"
-            className={mode === 'lab' ? 'active' : ''}
-            onClick={() => switchMode('lab')}
-            aria-pressed={mode === 'lab'}
-          >
-            Bio lab planner
-          </button>
-        </nav>
+        <p className="dataset-status">
+          <span className={`status-dot ${loadError ? 'error' : ''}`} />
+          {loadError ? 'City layer unavailable' : mapReady ? 'Official zoning layer loaded' : 'Loading city zoning data'}
+        </p>
         <a
           className="planning-link"
           href="https://sfplanning.org/zoning"
@@ -748,225 +649,140 @@ export default function Home() {
         </a>
       </header>
 
-      <section className={`workspace ${mode === 'lab' ? 'lab-mode' : ''}`}>
+      <section className="workspace lab-workspace">
         <aside className={`side-panel ${panelOpen ? 'panel-open' : ''}`}>
           <div className="intro-block">
-            <p className="eyebrow">
-              {mode === 'lab' ? 'Bio lab location screener' : 'San Francisco zoning explorer'}
-            </p>
-            <h1>
-              {mode === 'lab' ? (
-                <>Find a smarter<br />place to start.</>
-              ) : (
-                <>Read the city,<br />parcel by parcel.</>
-              )}
-            </h1>
+            <p className="eyebrow">iPSC lab location screener</p>
+            <h1>Find a viable<br />place to start.</h1>
             <p className="lede">
-              {mode === 'lab'
-                ? 'Screen an address against its zoning signal, then build a tailored list of questions for Planning, Fire, building, and health review.'
-                : 'Explore current use districts across San Francisco. Filter the map or select a zone to open its Planning Code reference.'}
+              Built specifically for automated bioelectric research using human iPSC-derived liver cells.
             </p>
           </div>
 
-          {mode === 'zoning' ? (
-            <>
-              <div className="search-block">
-                <label htmlFor="zone-search">Find a zone</label>
-                <div className="search-input-wrap">
-                  <span aria-hidden="true" className="search-icon" />
-                  <input
-                    id="zone-search"
-                    value={search}
-                    onChange={(event) => setSearch(event.target.value)}
-                    placeholder="Try RH-2 or neighborhood commercial"
-                    autoComplete="off"
-                  />
-                  {search && (
-                    <button
-                      type="button"
-                      className="clear-search"
-                      onClick={() => setSearch('')}
-                      aria-label="Clear zone search"
-                    >
-                      ×
-                    </button>
-                  )}
-                </div>
+          <div className="search-block address-search-block">
+            <label htmlFor="address-search">Search a San Francisco address</label>
+            <div className="search-input-wrap">
+              <span aria-hidden="true" className="search-icon" />
+              <input
+                id="address-search"
+                value={addressQuery}
+                onChange={(event) => {
+                  setAddressQuery(event.target.value);
+                  setSelectedAddress(null);
+                }}
+                placeholder="455 Mission Street"
+                autoComplete="street-address"
+              />
+              {addressSearching && <span className="mini-spinner" aria-label="Searching" />}
+              {addressQuery && !addressSearching && (
+                <button
+                  type="button"
+                  className="clear-search"
+                  onClick={() => {
+                    setAddressQuery('');
+                    setAddressResults([]);
+                    setSelectedAddress(null);
+                  }}
+                  aria-label="Clear address search"
+                >
+                  ×
+                </button>
+              )}
+            </div>
+            {addressQuery.trim().length >= 3 && addressResults.length > 0 && (
+              <div className="address-results" role="listbox" aria-label="Address results">
+                {addressResults.map((result) => (
+                  <button
+                    key={`${result.address}-${result.parcel_number ?? result.longitude}`}
+                    type="button"
+                    onClick={() => selectAddress(result)}
+                    role="option"
+                    aria-selected={selectedAddress?.address === result.address}
+                  >
+                    <strong>{result.address}</strong>
+                    <span>{result.parcel_number ? `Parcel ${result.parcel_number}` : 'San Francisco'}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <section className="fixed-profile" aria-labelledby="profile-title">
+            <div className="section-heading">
+              <span id="profile-title">Fixed screening profile</span>
+              <span className="profile-lock">Tailored</span>
+            </div>
+            <div className="profile-tags">
+              <span>Human iPSC liver cells</span>
+              <span>Bioelectric R&amp;D</span>
+              <span>BSL-2 practices</span>
+              <span>Opentrons automation</span>
+              <span>Automated CO₂ incubation</span>
+              <span>Biohazard waste</span>
+            </div>
+            <p>No animals or manufacturing assumed. CO₂ cylinders and ordinary research quantities of regulated materials are assumed.</p>
+          </section>
+
+          {detailZone && assessment ? (
+            <article className="assessment-panel" aria-live="polite">
+              {selectedAddress && <p className="selected-address">{selectedAddress.address}</p>}
+              <div className="zone-card-topline">
+                <span className="zone-code">{detailZone.zoning}</span>
+                <span className="zone-category">{detailZone.category}</span>
+              </div>
+              <h2>{detailZone.name.toLocaleLowerCase()}</h2>
+              <div className={`fit-result ${assessment.tone}`}>
+                <span className="fit-label">
+                  <i style={{ backgroundColor: FIT_META[assessment.tone].color }} />
+                  {assessment.label}
+                </span>
+                <strong className="confidence-line">{assessment.confidence}</strong>
+                <p>{assessment.summary}</p>
               </div>
 
-              <div className="filter-block">
-                <div className="section-heading">
-                  <span>District type</span>
-                  <span className="count-label">
-                    {zoneCount ? `${zoneCount.toLocaleString()} shapes` : 'Loading…'}
-                  </span>
-                </div>
-                <div className="category-list" role="list" aria-label="Zoning categories">
-                  {CATEGORIES.map((item) => (
-                    <button
-                      key={item.value}
-                      type="button"
-                      className={`category-button ${category === item.value ? 'active' : ''}`}
-                      onClick={() => setCategory(item.value)}
-                      aria-pressed={category === item.value}
-                    >
-                      <span className="category-swatch" style={{ backgroundColor: item.color }} />
-                      <span>{item.label}</span>
-                      {category === item.value && <span className="category-check">✓</span>}
-                    </button>
-                  ))}
-                </div>
+              <div className="detail-list">
+                <h3>Why this signal</h3>
+                <ul>{assessment.evidence.map((item) => <li key={item}>{item}</li>)}</ul>
               </div>
-            </>
-          ) : (
-            <>
-              <div className="search-block address-search-block">
-                <label htmlFor="address-search">Search a San Francisco address</label>
-                <div className="search-input-wrap">
-                  <span aria-hidden="true" className="search-icon" />
-                  <input
-                    id="address-search"
-                    value={addressQuery}
-                    onChange={(event) => {
-                      setAddressQuery(event.target.value);
-                      setSelectedAddress(null);
-                    }}
-                    placeholder="455 Mission Street"
-                    autoComplete="street-address"
-                  />
-                  {addressSearching && <span className="mini-spinner" aria-label="Searching" />}
-                  {addressQuery && !addressSearching && (
-                    <button
-                      type="button"
-                      className="clear-search"
-                      onClick={() => {
-                        setAddressQuery('');
-                        setAddressResults([]);
-                        setSelectedAddress(null);
-                      }}
-                      aria-label="Clear address search"
-                    >
-                      ×
-                    </button>
-                  )}
-                </div>
-                {mode === 'lab' && addressQuery.trim().length >= 3 && addressResults.length > 0 && (
-                  <div className="address-results" role="listbox" aria-label="Address results">
-                    {addressResults.map((result) => (
-                      <button
-                        key={`${result.address}-${result.parcel_number ?? result.longitude}`}
-                        type="button"
-                        onClick={() => selectAddress(result)}
-                        role="option"
-                        aria-selected={selectedAddress?.address === result.address}
-                      >
-                        <strong>{result.address}</strong>
-                        <span>{result.parcel_number ? `Parcel ${result.parcel_number}` : 'San Francisco'}</span>
-                      </button>
-                    ))}
-                  </div>
+              <div className="detail-list">
+                <h3>Verify before a lease</h3>
+                <ul>{assessment.verify.map((item) => <li key={item}>{item}</li>)}</ul>
+              </div>
+
+              <div className="zone-card-links">
+                {detailZone.codeUrl && (
+                  <a href={detailZone.codeUrl} target="_blank" rel="noreferrer">District code ↗</a>
                 )}
+                <a href="https://propertymap.sfplanning.org/" target="_blank" rel="noreferrer">Verify parcel ↗</a>
               </div>
-
-              <div className="lab-step">
-                <div className="section-heading">
-                  <span>1 · Choose your lab model</span>
-                </div>
-                <div className="lab-profile-list">
-                  {LAB_PROFILES.map((profile) => (
-                    <button
-                      key={profile.value}
-                      type="button"
-                      className={labProfile === profile.value ? 'active' : ''}
-                      onClick={() => setLabProfile(profile.value)}
-                      aria-pressed={labProfile === profile.value}
-                    >
-                      <span className="profile-radio" />
-                      <span>
-                        <strong>{profile.label}</strong>
-                        <small>{profile.detail}</small>
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="lab-step needs-step">
-                <div className="section-heading">
-                  <span>2 · Flag operational needs</span>
-                </div>
-                <div className="needs-grid">
-                  {([
-                    ['hazmat', 'Hazardous materials'],
-                    ['gases', 'Compressed gas / cryogens'],
-                    ['animals', 'Animals / vivarium'],
-                    ['clinical', 'Clinical samples / medical waste'],
-                  ] as [LabNeed, string][]).map(([need, label]) => (
-                    <label key={need}>
-                      <input
-                        type="checkbox"
-                        checked={labNeeds[need]}
-                        onChange={() => toggleNeed(need)}
-                      />
-                      <span className="check-box" aria-hidden="true">✓</span>
-                      {label}
-                    </label>
-                  ))}
-                </div>
-              </div>
-
-              <div className="lab-checklist">
-                <div className="section-heading">
-                  <span>3 · Early review checklist</span>
-                </div>
-                <ol>
-                  <li>
-                    <span>01</span>
-                    <p><strong>Confirm land-use classification</strong>Ask Planning whether the operation is Office, Laboratory, Life Science, and/or Manufacturing.</p>
-                  </li>
-                  <li>
-                    <span>02</span>
-                    <p><strong>Test the building</strong>Have a code professional review occupancy, ventilation, egress, plumbing, power, loading, and tenant improvements.</p>
-                  </li>
-                  {(labNeeds.hazmat || labNeeds.gases || labProfile === 'pilot') && (
-                    <li>
-                      <span>03</span>
-                      <p><strong>Inventory regulated materials</strong>Quantities can trigger Fire permits, control areas, hazardous occupancy, and CUPA/CERS duties.</p>
-                    </li>
-                  )}
-                  {(labNeeds.clinical || labProfile === 'life_science') && (
-                    <li>
-                      <span>04</span>
-                      <p><strong>Plan biosafety and waste</strong>Document a protocol-driven risk assessment and determine medical-waste obligations.</p>
-                    </li>
-                  )}
-                  {labNeeds.animals && (
-                    <li>
-                      <span>05</span>
-                      <p><strong>Review the vivarium separately</strong>Animal facilities add land-use, welfare, ventilation, waste, and institutional oversight questions.</p>
-                    </li>
-                  )}
-                </ol>
-                <div className="resource-links">
-                  <a href="https://sf-fire.org/services/permits" target="_blank" rel="noreferrer">Fire permits ↗</a>
-                  <a href="https://www.sf.gov/resource--2023--building-inspection-division" target="_blank" rel="noreferrer">Building review ↗</a>
-                  <a href="https://www.cdc.gov/labs/bmbl/index.html" target="_blank" rel="noreferrer">CDC/NIH biosafety ↗</a>
-                </div>
-              </div>
-            </>
+            </article>
+          ) : (
+            <section className="screening-guide">
+              <div className="section-heading"><span>How to read the map</span></div>
+              <div className="guide-row strong"><i /> <p><strong>Strong lead</strong>Clear base-zoning support or an established life-science plan area.</p></div>
+              <div className="guide-row review"><i /> <p><strong>Manual review</strong>A known condition, special plan, or use-classification issue controls.</p></div>
+              <div className="guide-row low"><i /> <p><strong>Lower fit</strong>No clear Life Science path appears in this first-pass layer.</p></div>
+            </section>
           )}
 
+          <details className="building-review">
+            <summary>Building readiness checklist</summary>
+            <ul>{BUILDING_CHECKS.map((item) => <li key={item}>{item}</li>)}</ul>
+          </details>
+
+          <div className="resource-links">
+            <a href="https://codelibrary.amlegal.com/codes/san_francisco/latest/sf_planning/0-0-0-27132" target="_blank" rel="noreferrer">Life Science definition ↗</a>
+            <a href="https://sf-fire.org/services/permits" target="_blank" rel="noreferrer">Fire permits ↗</a>
+            <a href="https://www.cdc.gov/labs/bmbl/index.html" target="_blank" rel="noreferrer">CDC biosafety ↗</a>
+          </div>
+
           <div className="panel-note">
-            <span className="note-index">{mode === 'lab' ? '!' : '01'}</span>
-            <p>
-              {mode === 'lab'
-                ? 'This is an early screening aid, not a zoning or permit determination. District tables, special-use controls, building conditions, materials, quantities, and procedures all matter.'
-                : 'Boundaries are for exploration. Confirm a property’s zoning with the official SF Planning map before making decisions.'}
-            </p>
+            <span className="note-index">!</span>
+            <p>This is an early site screen, not a permit determination. A green area means strong evidence for the land-use path—not that every suite is lab-ready or finally approved.</p>
           </div>
         </aside>
 
-        <section className="map-stage" id="map" aria-label="Interactive San Francisco zoning map">
+        <section className="map-stage" id="map" aria-label="Interactive San Francisco bio lab suitability map">
           <div ref={mapContainerRef} className="map-canvas" />
 
           {!mapReady && !loadError && (
@@ -977,7 +793,7 @@ export default function Home() {
                   {zoningLoad.phase === 'connecting' && 'Connecting to SF Open Data…'}
                   {zoningLoad.phase === 'downloading' && 'Downloading zoning boundaries…'}
                   {zoningLoad.phase === 'parsing' && 'Preparing downloaded boundaries…'}
-                  {zoningLoad.phase === 'rendering' && 'Drawing zoning districts…'}
+                  {zoningLoad.phase === 'rendering' && 'Scoring districts for your lab…'}
                 </strong>
               </div>
               <div
@@ -1000,8 +816,8 @@ export default function Home() {
                 {zoningLoad.phase === 'parsing' && `${formatBytes(zoningLoad.loadedBytes)} downloaded`}
                 {zoningLoad.phase === 'rendering' && (
                   zoningLoad.featureCount
-                    ? `Placing ${zoningLoad.featureCount.toLocaleString()} district shapes on the map`
-                    : 'Placing district shapes on the map'
+                    ? `Assessing ${zoningLoad.featureCount.toLocaleString()} district shapes`
+                    : 'Assessing district shapes'
                 )}
               </span>
             </div>
@@ -1020,81 +836,20 @@ export default function Home() {
               Reset view
             </button>
             <span className="toolbar-divider" />
-            <span className="active-layer">
-              <i style={{ backgroundColor: mode === 'lab' ? '#2d9a82' : activeCategory.color }} />
-              {mode === 'lab' ? `${activeLabProfile.shortLabel} screening` : activeCategory.label}
-            </span>
+            <span className="active-layer"><i /> iPSC lab screening</span>
           </div>
 
-          {mode === 'lab' && (
-            <div className="lab-map-legend" aria-label="Lab screening legend">
-              <p>First-pass location signal</p>
-              <span><i className="lead" /> Better lead</span>
-              <span><i className="review" /> Review</span>
-              <span><i className="low" /> Lower signal</span>
-            </div>
-          )}
-
-          {detailZone && (
-            <article className={`zone-card ${mode === 'lab' ? 'lab-zone-card' : ''}`} aria-live="polite">
-              <button
-                type="button"
-                className="zone-card-close"
-                onClick={() => {
-                  setSelectedZone(null);
-                  setSelectedAddress(null);
-                  setPanelOpen(false);
-                }}
-                aria-label="Close zone details"
-              >
-                ×
-              </button>
-              {selectedAddress && mode === 'lab' && (
-                <p className="selected-address">{selectedAddress.address}</p>
-              )}
-              <div className="zone-card-topline">
-                <span className="zone-code">{detailZone.zoning}</span>
-                <span className="zone-category">{detailZone.category}</span>
-              </div>
-              <h2>{detailZone.name.toLocaleLowerCase()}</h2>
-              {mode === 'lab' && labAssessment ? (
-                <div className={`fit-result ${labAssessment.tone}`}>
-                  <span className="fit-label">
-                    <i style={{ backgroundColor: FIT_META[labAssessment.tone].color }} />
-                    {labAssessment.label}
-                  </span>
-                  <p>{labAssessment.reason}</p>
-                  <small>Screening for: {activeLabProfile.label}</small>
-                </div>
-              ) : (
-                <div className="zone-card-meta">
-                  <span>Use district</span>
-                  <strong>
-                    {detailZone.codeSection ? `Code § ${detailZone.codeSection}` : 'See Planning Code'}
-                  </strong>
-                </div>
-              )}
-              <div className="zone-card-links">
-                {detailZone.codeUrl && (
-                  <a href={detailZone.codeUrl} target="_blank" rel="noreferrer">
-                    District code <span aria-hidden="true">↗</span>
-                  </a>
-                )}
-                {mode === 'lab' && (
-                  <a href="https://propertymap.sfplanning.org/" target="_blank" rel="noreferrer">
-                    Verify parcel <span aria-hidden="true">↗</span>
-                  </a>
-                )}
-              </div>
-            </article>
-          )}
+          <div className="lab-map-legend" aria-label="Lab screening legend">
+            <p>Location signal</p>
+            <span><i className="strong" /> Strong lead</span>
+            <span><i className="review" /> Manual review</span>
+            <span><i className="low" /> Lower fit</span>
+          </div>
 
           {!detailZone && mapReady && (
             <div className="map-hint">
               <span className="cursor-dot" aria-hidden="true" />
-              {mode === 'lab'
-                ? 'Search an address or tap a district to screen it'
-                : 'Hover or tap a district to inspect it'}
+              Search an address or select a district
             </div>
           )}
 
@@ -1104,7 +859,7 @@ export default function Home() {
             onClick={() => setPanelOpen((open) => !open)}
             aria-expanded={panelOpen}
           >
-            {panelOpen ? 'Hide planner' : mode === 'lab' ? 'Open lab planner' : 'Explore zones'}
+            {panelOpen ? 'Hide details' : detailZone ? 'View location details' : 'Open site guide'}
           </button>
         </section>
       </section>

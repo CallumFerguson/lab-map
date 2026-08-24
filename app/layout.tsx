@@ -1,9 +1,9 @@
 import type { Metadata } from 'next';
 import './globals.css';
 
-const title = 'SF Zoning Atlas';
+const title = 'SF Bio Lab Site Finder';
 const description =
-  'Explore current San Francisco zoning use districts on an interactive MapLibre map using official DataSF boundaries.';
+  'Screen San Francisco locations for an automated human iPSC life-science lab using official zoning boundaries and tailored parcel guidance.';
 const socialImage =
   'https://sf-zoning-atlas.coolcorps.chatgpt.site/og.png';
 
@@ -19,7 +19,7 @@ export const metadata: Metadata = {
         url: socialImage,
         width: 1200,
         height: 630,
-        alt: 'SF Zoning Atlas — Read the city, parcel by parcel.',
+        alt: 'SF Bio Lab Site Finder map preview.',
       },
     ],
   },
