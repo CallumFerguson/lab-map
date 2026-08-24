@@ -373,19 +373,19 @@ export default function Home() {
     totalBytes: null,
     featureCount: null,
   });
-  const [mode, setMode] = useState<ExplorerMode>('zoning');
+  const [mode, setMode] = useState<ExplorerMode>('lab');
   const [category, setCategory] = useState<CategoryValue>('all');
   const [search, setSearch] = useState('');
   const [addressQuery, setAddressQuery] = useState('');
   const [addressResults, setAddressResults] = useState<AddressResult[]>([]);
   const [addressSearching, setAddressSearching] = useState(false);
   const [selectedAddress, setSelectedAddress] = useState<AddressResult | null>(null);
-  const [labProfile, setLabProfile] = useState<LabProfile>('standard');
+  const [labProfile, setLabProfile] = useState<LabProfile>('life_science');
   const [labNeeds, setLabNeeds] = useState<Record<LabNeed, boolean>>({
-    hazmat: false,
-    gases: false,
+    hazmat: true,
+    gases: true,
     animals: false,
-    clinical: false,
+    clinical: true,
   });
   const [selectedZone, setSelectedZone] = useState<ZoneDetails | null>(null);
   const [hoveredZone, setHoveredZone] = useState<ZoneDetails | null>(null);
